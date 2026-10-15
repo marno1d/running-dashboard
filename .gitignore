@@ -1,0 +1,6 @@
+.venv/
+.garmin-tokens/
+data/
+dashboard/data.js
+*.pyc
+__pycache__/

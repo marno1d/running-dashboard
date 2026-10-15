@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Garmin Progress Dashboard</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Norwegian singles progress</p>
+          <h1>Training dashboard</h1>
+          <p id="metaLine" class="meta-line"></p>
+        </div>
+      </header>
+
+      <div class="sticky-controls">
+        <div class="top-controls">
+          <fieldset class="range-control" aria-label="Date range">
+            <legend>Range</legend>
+            <select id="rangeSelect">
+              <option value="all">All</option>
+              <option value="180">Last 180 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="45">Last 45 days</option>
+              <option value="custom">Custom</option>
+            </select>
+            <div id="customRangeControls" class="custom-range" hidden>
+              <label>
+                <span>Start</span>
+                <input id="customStartDate" type="date">
+              </label>
+              <label>
+                <span>End</span>
+                <input id="customEndDate" type="date">
+              </label>
+            </div>
+          </fieldset>
+          <fieldset class="adjust-control" aria-label="Pace adjustments">
+            <legend>Pace adjust</legend>
+            <label><input id="adjustAll" type="checkbox" data-adjust="all"> All</label>
+            <label><input type="checkbox" data-adjust="elevation"> Elevation</label>
+            <label><input type="checkbox" data-adjust="temperature"> Temp</label>
+          </fieldset>
+          <fieldset class="refresh-control" aria-label="Dashboard data refresh">
+            <legend>Data</legend>
+            <div class="refresh-control-main">
+              <button id="refreshButton" type="button" disabled>Refresh</button>
+              <span id="refreshStatus" role="status" aria-live="polite">Checking&hellip;</span>
+            </div>
+            <div id="refreshLogPanel" class="refresh-log-panel" hidden>
+              <button id="refreshLogDismiss" class="refresh-log-dismiss" type="button" aria-label="Dismiss update log">&times;</button>
+              <details id="refreshDetails">
+                <summary>Update log</summary>
+                <pre id="refreshLog"></pre>
+              </details>
+            </div>
+          </fieldset>
+        </div>
+      </div>
+
+      <section id="kpis" class="kpis" aria-label="Training summary"></section>
+
+      <section class="layout">
+        <article class="panel panel-wide">
+          <header class="panel-header">
+            <div>
+              <h2>Weekly Load</h2>
+              <p>Selected weekly training metric</p>
+            </div>
+            <fieldset id="weeklyMetricControl" class="mode-control" aria-label="Weekly load metric">
+              <label><input type="radio" name="weeklyMetric" value="trainingLoad" checked> TRIMP</label>
+              <label><input type="radio" name="weeklyMetric" value="totalMinutes"> Total time</label>
+              <label><input type="radio" name="weeklyMetric" value="runMinutes"> Run time</label>
+              <label><input type="radio" name="weeklyMetric" value="intervalPercent"> Interval %</label>
+              <label><input type="radio" name="weeklyMetric" value="runMiles"> Run miles</label>
+            </fieldset>
+          </header>
+          <div id="weeklyChart" class="chart"></div>
+        </article>
+
+        <article class="panel">
+          <header class="panel-header">
+            <div>
+              <h2>Interval Pace</h2>
+              <p>Active interval reps by observed or intensity-normalized pace</p>
+            </div>
+            <fieldset class="mode-control prediction-mode" aria-label="Interval pace mode">
+              <label><input type="radio" name="intervalPaceMode" value="observed" checked> Observed</label>
+              <label><input type="radio" name="intervalPaceMode" value="intensity"> Intensity</label>
+            </fieldset>
+          </header>
+          <div id="intervalChart" class="chart"></div>
+        </article>
+
+        <article class="panel">
+          <header class="panel-header">
+            <div>
+              <h2>5K Time Trials</h2>
+              <p>Measured trials with interval and outdoor easy-speed estimates</p>
+            </div>
+            <fieldset class="mode-control prediction-mode" aria-label="5K prediction mode">
+              <label><input type="radio" name="predictionMode" value="pace" checked> Observed</label>
+              <label><input type="radio" name="predictionMode" value="hrAdjusted"> Intensity</label>
+            </fieldset>
+          </header>
+          <div id="trialChart" class="chart"></div>
+        </article>
+
+        <article class="panel">
+          <header class="panel-header">
+            <div>
+              <h2>Easy Pace</h2>
+              <p>Easy running pace by date</p>
+            </div>
+            <fieldset class="mode-control prediction-mode" aria-label="Easy pace mode">
+              <label><input type="radio" name="easyPaceMode" value="observed" checked> Observed</label>
+              <label><input type="radio" name="easyPaceMode" value="intensity"> Intensity</label>
+            </fieldset>
+          </header>
+          <div id="easyPaceChart" class="chart"></div>
+        </article>
+
+        <article class="panel">
+          <header class="panel-header">
+            <div>
+              <h2>Easy HR Control</h2>
+              <p>Easy sessions against the 70% max HR ceiling</p>
+            </div>
+          </header>
+          <div id="easyChart" class="chart"></div>
+        </article>
+
+        <article class="panel panel-wide">
+          <header class="panel-header">
+            <div>
+              <h2>Interval Targets</h2>
+              <p>Norwegian Singles paces from 5K fitness using FVDOT math</p>
+            </div>
+            <fieldset class="mode-control target-source-control" aria-label="Interval target source">
+              <label><input type="radio" name="targetSource" value="predicted" checked> Predicted</label>
+              <label><input type="radio" name="targetSource" value="latest"> Latest TT</label>
+              <label><input type="radio" name="targetSource" value="custom"> Custom</label>
+            </fieldset>
+          </header>
+          <div class="target-panel">
+            <div class="target-controls">
+              <label id="customTargetTimeWrap" class="target-time-control" hidden>
+                <span>5K time</span>
+                <input id="customTargetTime" type="text" inputmode="numeric" placeholder="17:30">
+              </label>
+              <fieldset class="target-condition-control" aria-label="Target conditions">
+                <legend>Conditions</legend>
+                <label>
+                  <span>Temp &deg;F</span>
+                  <input id="targetTemperatureF" type="number" inputmode="decimal" value="45" placeholder="45">
+                </label>
+                <label>
+                  <span>Humidity %</span>
+                  <input id="targetHumidityPct" type="number" inputmode="decimal" min="0" max="100" placeholder="optional">
+                </label>
+                <label>
+                  <span>Gain ft</span>
+                  <input id="targetElevationGainFeet" type="number" inputmode="decimal" placeholder="+0">
+                </label>
+                <label>
+                  <span>Loss ft</span>
+                  <input id="targetElevationLossFeet" type="number" inputmode="decimal" placeholder="0">
+                </label>
+              </fieldset>
+            </div>
+            <div id="intervalTargets"></div>
+          </div>
+        </article>
+
+        <article class="panel panel-wide">
+          <header class="panel-header">
+            <div>
+              <h2>Weekly Recovery</h2>
+              <p>Average sleep hours, resting HR, and overnight HRV</p>
+            </div>
+          </header>
+          <div id="recoveryChart" class="chart"></div>
+        </article>
+
+        <article class="panel panel-wide">
+          <header class="panel-header">
+            <div>
+              <h2>Recent Sessions</h2>
+              <p>Latest activities in the selected range</p>
+            </div>
+            <label class="panel-select">
+              <span>Type</span>
+              <select id="recentTypeFilter"></select>
+            </label>
+          </header>
+          <div id="recentTable" class="table-wrap"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="./data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
