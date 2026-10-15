@@ -1,6 +1,18 @@
 .venv/
 .garmin-tokens/
 data/
-dashboard/data.js
+web_app/dashboard/data.js
 *.pyc
 __pycache__/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Android local configuration and generated outputs
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+android/.idea/
+*.iml
