@@ -1,0 +1,6 @@
+.venv
+.tools
+.state
+build/
+__pycache__/
+*.jks

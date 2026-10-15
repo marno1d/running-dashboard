@@ -110,7 +110,7 @@ def is_cross_train(activity_type: str) -> bool:
     return activity_type in CROSS_TRAIN_TYPES
 
 
-def classify(activity: dict[str, Any], local_date: date) -> str:
+def classify(activity: dict[str, Any], local_date: date, easy_hr_threshold: float = EASY_HR_THRESHOLD) -> str:
     name = str(activity.get("activityName") or "").lower()
     activity_type = type_key(activity)
     avg_hr = activity.get("averageHR")
@@ -135,10 +135,10 @@ def classify(activity: dict[str, Any], local_date: date) -> str:
         if any(token in name for token in ("easy", "recovery", "base")):
             return "easy"
         if INJURY_START <= local_date < RETURN_TO_INTERVALS:
-            if avg_hr is not None and float(avg_hr) < EASY_HR_THRESHOLD:
+            if avg_hr is not None and float(avg_hr) < easy_hr_threshold:
                 return "easy"
             return "rebuild_run"
-        if avg_hr is not None and float(avg_hr) < EASY_HR_THRESHOLD:
+        if avg_hr is not None and float(avg_hr) < easy_hr_threshold:
             return "easy"
         return "other_run"
     return "other"

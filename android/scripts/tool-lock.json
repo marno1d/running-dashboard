@@ -1,0 +1,46 @@
+{
+  "openjdk-21": {
+    "Filename": "pool/main/o/openjdk-21/openjdk-21_21.0.12_aarch64.deb",
+    "SHA256": "05b08dd961c30928992f87632539c3704bf082e2984aee11441c6127f9fd7884"
+  },
+  "aapt": {
+    "Filename": "pool/main/a/aapt/aapt_16.0.0.4-2_aarch64.deb",
+    "SHA256": "c11928a17a8117b80cf59ac10d7e5223fad55f40bd66b88bb3c1dce8a5ab3592"
+  },
+  "apksigner": {
+    "Filename": "pool/main/a/apksigner/apksigner_37.0.0_all.deb",
+    "SHA256": "d281f9836a2663acf5917ca93748ffc84780be3f383734e3fc4d642ea33f6d63"
+  },
+  "libandroid-shmem": {
+    "Filename": "pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+    "SHA256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6"
+  },
+  "libandroid-spawn": {
+    "Filename": "pool/main/liba/libandroid-spawn/libandroid-spawn_0.3_aarch64.deb",
+    "SHA256": "7988fa788ef48ab5da9660443905a2e4099ac36221739d72f5c39acc644b4d1c"
+  },
+  "libjpeg-turbo": {
+    "Filename": "pool/main/libj/libjpeg-turbo/libjpeg-turbo_3.2.0_aarch64.deb",
+    "SHA256": "e6339075bcde28b4902d5a51f4063164834abfd2fa115e881ae637a34585e54f"
+  },
+  "littlecms": {
+    "Filename": "pool/main/l/littlecms/littlecms_2.19.1_aarch64.deb",
+    "SHA256": "274f732a186563beca204f5d016d30cac8e5c24f7c4395b60881f9613eddf1a1"
+  },
+  "libpng": {
+    "Filename": "pool/main/libp/libpng/libpng_1.6.59_aarch64.deb",
+    "SHA256": "32d61f0b1a60cf7283aa3a80e288737493df2c6b84c8c749606b77c94a10f2b2"
+  },
+  "libzopfli": {
+    "Filename": "pool/main/libz/libzopfli/libzopfli_1.0.3-5_aarch64.deb",
+    "SHA256": "95cd7cb2209fbafb25825f5fcd4f86f021512175608e038b1c3d8d3fa0a4fe40"
+  },
+  "fmt": {
+    "Filename": "pool/main/f/fmt/fmt_1:11.2.0-1_aarch64.deb",
+    "SHA256": "dad595afcb3b1096d725c6772c0c5531764caa5841affba3c533c6298a32ab08"
+  },
+  "libexpat": {
+    "Filename": "pool/main/libe/libexpat/libexpat_2.9.0_aarch64.deb",
+    "SHA256": "f8a104e8227c9c181f6818658a3ee2fa4c107fac94219b068144fc6591086cdb"
+  }
+}

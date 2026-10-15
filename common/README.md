@@ -1,8 +1,13 @@
 # Shared resources
 
-Place resources used by both the web and Android apps here, such as JSON data
-schemas, synthetic sample data, and shared assets.
+Garmin response parsers shared by the web and Android apps:
 
-Keep platform-specific code in `web_app/` or `android/`. Add shared resources as
-they become needed; this folder does not yet contain a shared implementation.
-Do not commit real activity data, health data, or authentication tokens.
+- `garmin_health.py`: sleep, resting HR, and HRV response normalization.
+- `garmin_weather.py`: activity weather response normalization.
+
+The web downloaders import these modules relative to their source location.
+The Android build packages them into the embedded Python application archive.
+
+Keep platform-specific download, storage, and UI code in `web_app/` or
+`android/`. Do not commit real activity data, health data, or authentication
+tokens. Tests use synthetic fixtures.
