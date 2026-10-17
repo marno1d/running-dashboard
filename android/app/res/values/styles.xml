@@ -1,0 +1,43 @@
+<resources>
+  <style name="Theme.RunDashboard" parent="Theme.RunDashboard.Light" />
+  <style name="Theme.RunDashboard.Light" parent="android:style/Theme.Material.Light.NoActionBar">
+    <item name="android:fontFamily">sans-serif</item>
+    <item name="android:forceDarkAllowed">false</item>
+    <item name="android:colorAccent">#006B5E</item>
+    <item name="android:colorControlHighlight">#24006B5E</item>
+    <item name="android:windowBackground">#F7FAF7</item>
+    <item name="android:colorBackground">#F7FAF7</item>
+    <item name="android:textColorPrimary">#17201C</item>
+    <item name="android:textColorSecondary">#4F635A</item>
+    <item name="android:alertDialogTheme">@style/Theme.RunDashboard.Dialog.Light</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:windowLightNavigationBar">true</item>
+    <item name="android:windowActionModeOverlay">true</item>
+  </style>
+  <style name="Theme.RunDashboard.Dark" parent="android:style/Theme.Material.NoActionBar">
+    <item name="android:fontFamily">sans-serif</item>
+    <item name="android:forceDarkAllowed">false</item>
+    <item name="android:colorAccent">#81D5C2</item>
+    <item name="android:colorControlHighlight">#2481D5C2</item>
+    <item name="android:windowBackground">#101513</item>
+    <item name="android:colorBackground">#101513</item>
+    <item name="android:textColorPrimary">#DFE5DF</item>
+    <item name="android:textColorSecondary">#B5C9BD</item>
+    <item name="android:alertDialogTheme">@style/Theme.RunDashboard.Dialog.Dark</item>
+    <item name="android:windowLightStatusBar">false</item>
+    <item name="android:windowLightNavigationBar">false</item>
+    <item name="android:windowActionModeOverlay">true</item>
+  </style>
+  <style name="Theme.RunDashboard.Dialog.Light" parent="android:style/Theme.Material.Light.Dialog.Alert">
+    <item name="android:colorAccent">#006B5E</item>
+    <item name="android:fontFamily">sans-serif</item>
+    <item name="android:forceDarkAllowed">false</item>
+    <item name="android:windowBackground">@drawable/dialog_light</item>
+  </style>
+  <style name="Theme.RunDashboard.Dialog.Dark" parent="android:style/Theme.Material.Dialog.Alert">
+    <item name="android:colorAccent">#81D5C2</item>
+    <item name="android:fontFamily">sans-serif</item>
+    <item name="android:forceDarkAllowed">false</item>
+    <item name="android:windowBackground">@drawable/dialog_dark</item>
+  </style>
+</resources>

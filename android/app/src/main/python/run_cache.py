@@ -27,8 +27,16 @@ class RunCache:
         if old and version < 2:
             self.db.execute('DELETE FROM coverage')
             self.db.execute("DELETE FROM details WHERE kind='laps'")
+        self.db.execute('CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, body TEXT)')
         self.db.execute('PRAGMA user_version=2')
         self.db.commit()
+
+    def meta(self,key):
+        row=self.db.execute('SELECT body FROM sync_meta WHERE key=?',(key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_meta(self,key,body):
+        with self.db:self.db.execute('INSERT OR REPLACE INTO sync_meta VALUES(?,?)',(key,json.dumps(body)))
 
     def daily(self, start, end, kind):
         return {row[0]:json.loads(row[1]) for row in self.db.execute(
@@ -86,9 +94,12 @@ class RunCache:
                 self.db.execute('DELETE FROM details WHERE id=?',(identity,))
                 changed.append(identity)
             for identity,(day,body,fingerprint) in cleaned.items():
-                old=self.db.execute('SELECT fingerprint FROM runs WHERE id=?',(identity,)).fetchone()
+                old=self.db.execute('SELECT fingerprint,body FROM runs WHERE id=?',(identity,)).fetchone()
                 if old is not None and old[0]!=fingerprint:
-                    self.db.execute('DELETE FROM details WHERE id=?',(identity,));changed.append(identity)
+                    before=json.loads(old[1]);after=json.loads(body)
+                    inputs=('distance','duration','movingDuration','elapsedDuration','startTimeLocal','startTimeGMT','activityType','averageHR','maxHR','_station_match')
+                    if any(before.get(key)!=after.get(key) for key in inputs):
+                        self.db.execute('DELETE FROM details WHERE id=?',(identity,));changed.append(identity)
                 self.db.execute('INSERT OR REPLACE INTO runs VALUES(?,?,?,?)',(identity,day,body,fingerprint))
             windows=list(self.db.execute('SELECT start,end FROM coverage'))+[(start,end)]
             merged=[]
@@ -112,4 +123,4 @@ class RunCache:
 
     def clear(self):
         with self.db:
-            for table in ('runs','coverage','details','daily'):self.db.execute('DELETE FROM '+table)
+            for table in ('runs','coverage','details','daily','sync_meta'):self.db.execute('DELETE FROM '+table)

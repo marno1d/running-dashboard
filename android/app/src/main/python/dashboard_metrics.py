@@ -144,6 +144,8 @@ def parse_time(value):
 def intensity(row, health, max_hr, interval):
     hr = row.get('work_hr') if interval else row.get('average_hr')
     rest = positive(row.get('resting_hr')) or positive(health.get(row['date'],{}).get('resting_hr'))
+    if rest is not None:
+        rest=round(rest)
     if rest is None:
         week = date.fromisoformat(row['date'])
         week -= timedelta(days=week.weekday())
@@ -152,12 +154,12 @@ def intensity(row, health, max_hr, interval):
         finite = [v for v in same_week if v is not None]
         groups = {}
         for day,value in health.items():
-            hr = positive(value.get('resting_hr'))
-            if hr:
+            resting = positive(value.get('resting_hr'))
+            if resting:
                 stamp = date.fromisoformat(day)
                 week_key = (stamp-timedelta(days=stamp.weekday())).isoformat()
-                groups.setdefault(week_key,[]).append(hr)
-        rest = mean(finite) if finite else mid([round(mean(values)) for values in groups.values()])
+                groups.setdefault(week_key,[]).append(resting)
+        rest = round(web_sum(finite)/len(finite)) if finite else mid([round(web_sum(values)/len(values)) for values in groups.values()])
     if not hr or not rest or max_hr <= rest:
         return None
     return clamp((hr-rest)/(max_hr-rest), .3 if interval else .2, 1.15 if interval else .9)
@@ -165,19 +167,24 @@ def intensity(row, health, max_hr, interval):
 
 def normalized_paces(rows, health, settings, interval=False):
     max_hr = settings.get('max_hr',191)
+    # Resolve fallbacks once per session, rather than scanning recovery history
+    # again for every pair, category, and normalization step.
+    intensities = {r['id']:intensity(r,health,max_hr,interval) for r in rows}
+    def effort(row):
+        return intensities[row['id']]
     groups = INTERVALS if interval else ('easy',)
     output = {}
-    all_values = [intensity(r,health,max_hr,interval) for r in rows]
+    all_values = [effort(r) for r in rows]
     overall = mid(all_values, .86 if interval else .55)
     for group in groups:
-        usable = [r for r in rows if (r['category']==group or (not interval and r['category'] in EASY)) and intensity(r,health,max_hr,interval) is not None]
-        target = mid([intensity(r,health,max_hr,interval) for r in usable],overall)
+        usable = [r for r in rows if (r['category']==group or (not interval and r['category'] in EASY)) and effort(r) is not None]
+        target = mid([effort(r) for r in usable],overall)
         fallback = clamp(1/target, .8 if interval else 1.1, 1.35 if interval else 2.3)
         slopes = []
         for previous,row in zip(usable,usable[1:]):
             if (date.fromisoformat(row['date'])-date.fromisoformat(previous['date'])).days > (45 if interval else 21):
                 continue
-            delta = intensity(row,health,max_hr,interval)-intensity(previous,health,max_hr,interval)
+            delta = effort(row)-effort(previous)
             first = previous.get('work_pace') if interval else previous.get('pace')
             last = row.get('work_pace') if interval else row.get('pace')
             if abs(delta)<.015 or not first or not last:
@@ -190,7 +197,7 @@ def normalized_paces(rows, health, settings, interval=False):
         for row in usable:
             pace = row.get('work_pace') if interval else row.get('pace')
             if pace:
-                output[row['id']] = adjusted_pace(row,pace,settings,interval)/math.exp(beta*(target-intensity(row,health,max_hr,interval)))
+                output[row['id']] = adjusted_pace(row,pace,settings,interval)/math.exp(beta*(target-effort(row)))
     return output
 
 
@@ -239,36 +246,46 @@ def predictions(rows, settings, health, calibration_rows=None):
             prior = [p for p in calibration_series if 0 <= (date.fromisoformat(trial['date'])-date.fromisoformat(p['date'])).days <= 21
                      and (not chronological or p['started'] <= trial['started'])]
             if prior:
-                pace = trial['best_5k']['duration']/5
-                ratios.append(adjusted_pace(trial,pace,settings)*5/prior[-1]['duration'])
+                ratios.append(adjusted_trial(trial,settings)/prior[-1]['duration'])
         ratio = clamp(median(ratios),lower,upper) if len(ratios)>=minimum else (1 if minimum==1 else None)
         return [dict(p,duration=p['duration']*ratio,calibrations=len(ratios)) for p in series] if ratio else []
     return calibrate(raw,calibration_raw,1,.75,1.05,False), calibrate(raw_easy,calibration_easy,2,.5,.9,True)
 
 
-def weekly(rows, health, start, end):
+def web_sum(values,digits=None):
+    # Match the web builder's chronological += aggregation (including ties),
+    # after restoring independently rounded JSON units from native units.
+    total=0.0
+    for value in values:
+        total+=round(value,digits) if digits is not None else value
+    return total
+
+
+def weekly(rows, health, start, end, web_mode=False):
     first = date.fromisoformat(start)
     cursor = first-timedelta(days=first.weekday())
     final = date.fromisoformat(end)
     result = []
+    def total(values,digits):
+        return web_sum(values,digits) if web_mode else sum(values)
     while cursor <= final:
         last = cursor+timedelta(days=6)
         sessions = [r for r in rows if cursor.isoformat() <= r['date'] <= last.isoformat()]
         recovery = [v for d,v in health.items() if max(start,cursor.isoformat()) <= d <= min(end,last.isoformat())]
         run_rows = [r for r in sessions if r.get('is_run',True)]
-        total = sum((r.get('duration') or 0)/60 for r in sessions)
-        work = sum((r.get('work_duration') or 0)/60 for r in sessions if r['category'] in INTERVALS)
-        week = dict(date=cursor.isoformat(), total_minutes=total,
-                    run_minutes=sum((r.get('duration') or 0)/60 for r in run_rows),
-                    run_miles=sum((r.get('distance') or 0)/MILE for r in run_rows),
-                    training_load=sum((r.get('training_load') or 0) for r in sessions),
+        minutes = total(((r.get('duration') or 0)/60 for r in sessions),1)
+        work = total(((r.get('work_duration') or 0)/60 for r in sessions if r['category'] in INTERVALS),1)
+        week = dict(date=cursor.isoformat(), total_minutes=minutes,
+                    run_minutes=total(((r.get('duration') or 0)/60 for r in run_rows),1),
+                    run_miles=total(((r.get('distance') or 0)/MILE for r in run_rows),2),
+                    training_load=total(((r.get('training_load') or 0) for r in sessions),1),
                     load_count=sum(r.get('training_load') is not None for r in sessions),
-                    interval_percent=work/total*100 if total else 0,
+                    interval_percent=work/minutes*100 if minutes else 0,
                     interval_minutes=work, sessions=len(sessions))
         for key in ('sleep_hours','sleep_score','resting_hr','hrv'):
             values = [number(r.get(key)) for r in recovery]
             values = [v for v in values if v is not None]
-            week[key] = mean(values) if values else None
+            week[key] = (web_sum(values)/len(values) if web_mode else mean(values)) if values else None
             week[key+'_days'] = len(values)
         result.append(week)
         cursor += timedelta(days=7)
@@ -282,7 +299,7 @@ def targets(rows, prediction, settings):
         seconds = parse_time(settings.get('target_time',''))
     elif source=='latest':
         trial = trials[-1] if trials else None
-        seconds = adjusted_pace(trial,trial['best_5k']['duration']/5,settings)*5 if trial else None
+        seconds = adjusted_trial(trial,settings) if trial else None
     else:
         seconds = prediction[-1]['duration'] if prediction else None
     if not seconds:
@@ -338,10 +355,45 @@ def rolling_easy_range(points):
         previous_range = lower,upper
 
 
+def web_precision(row):
+    """Use the web builder's published precision before chart calculations.
+
+    The cache keeps original measurements. In web classification mode these
+    display rows follow the JSON records consumed by the browser, including
+    independently rounded pace, mileage, time, feet, and heart-rate fields.
+    """
+    for key,scale,digits in (
+        ('pace',1.609344,1),('work_pace',1.609344,1),
+        ('distance',1/MILE,2),('work_distance',1/MILE,2),
+        ('duration',1/60,1),('work_duration',1/60,1),
+        ('average_hr',1,0),('work_hr',1,0),('max_hr',1,0),
+        ('elevation_gain',1/.3048,0),('elevation_loss',1/.3048,0),
+        ('work_gain',1/.3048,0),('work_loss',1/.3048,0),
+        ('training_load',1,1),('hr_under_percent',1,1),('hr_total_seconds',1/60,1)):
+        value=number(row.get(key))
+        if value is not None:row[key]=round(value*scale,digits)/scale
+    row['weather']=dict(row.get('weather') or {})
+    for key in ('temperatureF','dewPointF','humidity'):
+        value=number(row['weather'].get(key))
+        if value is not None:row['weather'][key]=round(value,0)
+    if row.get('best_5k'):
+        row['best_5k']=dict(row['best_5k'])
+        row['trial_pace']=round(row['best_5k']['duration']/FIVE_K_MILES,1)/1.609344
+        row['best_5k']['duration']=round(row['best_5k']['duration'],1)
+
+
+def adjusted_trial(row,settings):
+    duration=row['best_5k']['duration']
+    pace=row.get('trial_pace') or duration/5
+    adjusted=adjusted_pace(row,pace,settings)
+    return adjusted*1.609344*FIVE_K_MILES if adjusted!=pace else duration
+
+
 def enrich(result, activities, splits, health, weather, settings, visible_range=None, fit_intervals=None):
     original = {str(a['activityId']):a for a in activities}
     all_rows = sorted(result['runs'],key=lambda r:r['started'])
     fit_intervals = fit_intervals or {}
+    web_mode=settings.get('classification_mode')=='web'
     for row in all_rows:
         activity = original.get(row['id'],{})
         row['training_load'] = number(activity.get('activityTrainingLoad'))
@@ -367,7 +419,7 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
                 row['work_pace'] = row['work_duration']/row['work_distance']*1000
                 row['work_reps'] = summary['count']
                 row['work_source'] = summary['source']
-            if selection is None and fit:
+            if selection is None and (fit or web_mode):
                 row['work_hr'] = fit.get('avgHr')
                 row['work_gain'],row['work_loss'] = fit.get('ascentMeters'),fit.get('descentMeters')
             if row.get('work_pace') and (settings.get('interval_mode')=='session' or not points):
@@ -380,6 +432,14 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
             if row['id'] not in settings.get('laps',{}):
                 if terrain.get('work_gain') is not None:row['work_gain']=terrain['work_gain']
                 if terrain.get('work_loss') is not None:row['work_loss']=terrain['work_loss']
+        if web_mode:
+            web_precision(row)
+            if row['category'] in INTERVALS and settings.get('interval_mode')=='session':
+                for point in result['interval_points']:
+                    if point['id']==row['id']:
+                        point['pace']=row.get('work_pace')
+                        point['distance']=row.get('work_distance')
+                        point['duration']=row.get('work_duration')
     context_start,context_end = result['start'],result['end']
     if visible_range:
         result['start'],result['end'] = visible_range
@@ -388,11 +448,16 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
     selected = {r['id'] for r in rows}
     result['interval_points'] = sorted((p for p in result['interval_points'] if p['id'] in selected),key=lambda p:(p['date'],p.get('lap',0)))
     result['trial_points'] = [p for p in result['trial_points'] if p['id'] in selected]
-    all_weeks = weekly(all_rows,health,context_start,context_end)
+    all_weeks = weekly(all_rows,health,context_start,context_end,web_mode)
     if settings.get('full_history'):
-        result['weeks'] = [w for w in all_weeks if w['date']<=result['end'] and (w['date']>=result['start'] or settings.get('custom_range') and (date.fromisoformat(w['date'])+timedelta(days=6)).isoformat()>=result['start'])]
+        result['weeks'] = [w for w in all_weeks if w['date']<=result['end'] and (settings.get('all_range') or w['date']>=result['start'] or settings.get('custom_range') and (date.fromisoformat(w['date'])+timedelta(days=6)).isoformat()>=result['start'])]
     else:
-        result['weeks'] = weekly(rows,health,result['start'],result['end'])
+        result['weeks'] = weekly(rows,health,result['start'],result['end'],web_mode)
+    if web_mode:
+        for week in result['weeks']:
+            for field,digits in (('run_miles',1),('total_minutes',1),('run_minutes',1),('training_load',1),('interval_minutes',1),('sleep_hours',2),('sleep_score',0),('resting_hr',0),('hrv',0)):
+                if week.get(field) is not None:week[field]=round(week[field],digits)
+            week['interval_percent']=week['interval_minutes']/week['total_minutes']*100 if week['total_minutes'] else 0
     predicted,easy_predicted = predictions(rows,settings,health,all_rows)
     full_prediction,_ = predictions(all_rows,settings,health)
     result['prediction_points'],result['easy_prediction_points'] = predicted,easy_predicted
@@ -414,7 +479,7 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
         else:
             point['pace'] = pace
     result['interval_points'] = [p for p in result['interval_points'] if p['pace'] is not None]
-    result['trial_points'] = [dict(p,duration=adjusted_pace(by_id[p['id']],p['duration']/5,settings)*5) for p in result['trial_points']]
+    result['trial_points'] = [dict(p,duration=adjusted_trial(by_id[p['id']],settings)) for p in result['trial_points']]
     result['hr_points'] = [dict(r,value=r['average_hr']) for r in easy if r.get('average_hr')]
     trials = [r for r in rows if r.get('best_5k')]
     easy_weight = sum(r.get('hr_total_seconds') or r.get('duration') or 0 for r in easy)

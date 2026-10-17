@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT/'common'),str(ROOT/'android/app/src/main/python')]
 from dashboard_metrics import (elevation_delta, weather_reduction, vdot_from_5k, targets,
-                               predictions, normalized_paces, weekly, parse_time)
+                               predictions, normalized_paces, weekly, parse_time, intensity)
 from dashboard_sync import sync_extras
 from garmin_backend import Session
 from run_cache import RunCache
@@ -140,9 +140,19 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(weeks[0]['sleep_hours_days'],1)
         self.assertEqual(weeks[0]['hrv'],60)
 
+    def test_missing_daily_resting_hr_preserves_workout_hr_and_uses_weekly_fallback(self):
+        workout=row(1,'2026-10-06',hr=125)
+        health={'2026-10-05':dict(resting_hr=45),'2026-10-07':dict(resting_hr=46)}
+        self.assertAlmostEqual(intensity(workout,health,191,False),(125-46)/(191-46))
+        # Without that week's recovery, use the median of rounded weekly means.
+        health={'2026-09-21':dict(resting_hr=44),'2026-09-28':dict(resting_hr=45)}
+        self.assertAlmostEqual(intensity(workout,health,191,False),(125-44.5)/(191-44.5))
+        interval=dict(workout,category='short',work_hr=155)
+        self.assertAlmostEqual(intensity(interval,health,191,True),(155-44.5)/(191-44.5))
+
     def test_custom_548_day_range_uses_exact_dates(self):
         session=Session();self.addCleanup(session.cache.close);session.client=Mock()
-        session.client.connectapi.side_effect=[[]]
+        session.client.connectapi.return_value=[]
         result=session.dashboard('2026-10-14',-1,json.dumps(dict(custom_start='2025-04-15',custom_end='2026-10-14')))
         self.assertEqual(result['start'],'2025-04-15')
         self.assertEqual(result['end'],'2026-10-14')

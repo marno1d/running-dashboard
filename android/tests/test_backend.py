@@ -184,8 +184,10 @@ class TrainingTest(unittest.TestCase):
         self.assertTrue(any('Checked 1 run summaries' in label for label in labels))
         self.assertTrue(labels[-1].startswith('Charts ready'))
         session.client.connectapi.side_effect=backend.GarminConnectConnectionError('offline')
-        with self.assertRaises(backend.GarminConnectConnectionError):
-            session.dashboard('2026-10-06',90,'{}',True,progress)
+        paused=session.dashboard('2026-10-06',90,'{}',True,progress)
+        self.assertTrue(paused['sync_paused'])
+        self.assertEqual(paused['run_points'][0]['id'],'1')
+        self.assertNotIn('offline',str(paused['warnings']))
         self.assertEqual(session.dashboard('2026-10-06',90,'{}')['run_points'][0]['id'],'1')
 
     def test_sample_prioritizes_old_trial_within_year(self):
@@ -208,11 +210,11 @@ class TrainingTest(unittest.TestCase):
         self.assertEqual(len(normalized_runs(rows,'2026-10-06',548,{})['runs']),1)
         self.assertEqual(len(normalized_runs(rows,'2026-10-06',730,{})['runs']),3)
         session=backend.Session();session.client=Mock()
-        session.client.connectapi.side_effect=[rows,[]]
+        session.client.connectapi.side_effect=lambda *a,params:[r for r in rows if params['startDate']<=r['startTimeLocal'][:10]<=params['endDate']] if params['start']=='0' else []
         result=session.dashboard('2026-10-06',730,'{}')
         self.assertEqual(result['start'],'2024-10-07')
         self.assertEqual(len(result['runs']),3)
-        self.assertEqual(session.client.connectapi.call_args_list[0].kwargs['params']['startDate'],'2024-10-07')
+        self.assertEqual(min(c.kwargs['params']['startDate'] for c in session.client.connectapi.call_args_list),'2024-10-07')
 
     def test_sample_includes_only_safe_best_5k_summary(self):
         session=backend.Session();session.client=Mock()

@@ -351,6 +351,7 @@ def https_context() -> ssl.SSLContext | None:
 def query_elevations(
     samples: list[dict[str, Any]],
     args: argparse.Namespace,
+    request_json: Any = None,
 ) -> list[dict[str, Any]]:
     profile: list[dict[str, Any]] = []
     context = https_context()
@@ -374,8 +375,11 @@ def query_elevations(
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=args.timeout, context=context) as response:
-                result = json.loads(response.read().decode("utf-8"))
+            if request_json is not None:
+                result = request_json(request, args.timeout, context)
+            else:
+                with urllib.request.urlopen(request, timeout=args.timeout, context=context) as response:
+                    result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code}: {body}") from exc

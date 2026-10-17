@@ -130,7 +130,8 @@ class NativeParityTest(unittest.TestCase):
 
     def test_backend_fetches_full_context_but_returns_only_visible_sessions(self):
         session=Session();self.addCleanup(session.cache.close);session.client=Mock()
-        session.client.connectapi.side_effect=[[activity(1,'2025-07-01','Short intervals'),activity(2,'2025-07-10','5k time trial'),activity(3,'2026-10-12','Short intervals')],[]]
+        rows=[activity(1,'2025-07-01','Short intervals'),activity(2,'2025-07-10','5k time trial'),activity(3,'2026-10-12','Short intervals')]
+        session.client.connectapi.side_effect=lambda *a,params:[r for r in rows if params['startDate']<=r['startTimeLocal'][:10]<=params['endDate']] if params['start']=='0' else []
         session.client.get_activity_splits.return_value={'lapDTOs':[dict(intensityType='ACTIVE',distance=1000,duration=240)]}
         session.client.download_activity.return_value=recording([(0,0),(5000,1100)])
         result=session.dashboard('2026-10-14',7,json.dumps(dict(full_history=True,classification_mode='web')))
@@ -138,7 +139,7 @@ class NativeParityTest(unittest.TestCase):
         self.assertEqual(result['history_start'],'2025-06-01')
         self.assertEqual(result['prediction_points'][0]['calibrations'],1)
         self.assertEqual(result['targets']['source'],'predicted')
-        self.assertEqual(session.client.connectapi.call_args_list[0].kwargs['params']['startDate'],'2025-06-01')
+        self.assertEqual(min(c.kwargs['params']['startDate'] for c in session.client.connectapi.call_args_list),'2025-06-01')
 
     def test_full_context_fit_metrics_and_manual_lap_override(self):
         raw=activity(1,'2026-10-01','Short intervals',splitSummaries=[dict(splitType='INTERVAL_ACTIVE',distance=2000,duration=500,noOfSplits=5)])

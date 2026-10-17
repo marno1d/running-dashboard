@@ -7,7 +7,9 @@ from training import positive, normalized_runs, work_intervals, session_average,
 from run_cache import RunCache
 from dashboard_metrics import enrich, number
 from dashboard_sync import sync_extras
-from web_sources import stations
+from sync_job import SyncJob,SyncPaused
+from sync_coverage import coverage
+from web_sources import stations, dashboard as web_dashboard
 from best_effort import best_from_original
 from garminconnect import Garmin
 from garminconnect.exceptions import (
@@ -120,8 +122,25 @@ class Session:
             start.isoformat(), end.isoformat(), activitytype='running')
         return dict(self.status(), **run_titles(activities, today))
 
-    def dashboard(self, today, days, settings_json, refresh=False, progress=None):
-        if self.client is None:
+    def dashboard(self, today, days, settings_json, refresh=False, progress=None, offline=False, terrain_only=False):
+        job=SyncJob(progress)
+        try:
+            return self._dashboard(today,days,settings_json,refresh,job,offline,terrain_only)
+        except (SyncPaused,GarminConnectConnectionError,GarminConnectTooManyRequestsError,GarminConnectAuthenticationError,OSError) as error:
+            # Every completed listing window/metric was already committed. Build
+            # from saved inputs without issuing another request after a pause.
+            saved=self._dashboard(today,days,settings_json,False,SyncJob(),True,False)
+            if not saved['has_saved_data'] and not isinstance(error,SyncPaused):raise
+            if isinstance(error,SyncPaused):notice=str(error)
+            elif isinstance(error,GarminConnectTooManyRequestsError):notice='Garmin is limiting downloads. Completed data is saved; resume in a few minutes.'
+            elif isinstance(error,GarminConnectAuthenticationError):notice='Garmin needs you to reconnect in Profile. Saved charts remain available.'
+            else:notice='Connection interrupted. Completed data is saved; resume when connected.'
+            saved['warnings']=[notice]
+            saved['sync_paused']=True
+            return saved
+
+    def _dashboard(self, today, days, settings_json, refresh, job, offline, terrain_only):
+        if self.client is None and not offline:
             raise InputError('Sign in to Garmin first.')
         days = int(days)
         if days not in (-1, 0, 7, 30, 45, 90, 180, 365, 548, 730):
@@ -130,12 +149,11 @@ class Session:
         if not isinstance(settings, dict):
             raise InputError('Invalid training settings.')
         settings['custom_range'] = days == -1
+        settings['all_range'] = days == 0
         easy_hr = int(settings.get('easy_hr', 134))
         if not 40 <= easy_hr <= 240:
             raise InputError('Enter a heart-rate target between 40 and 240 bpm.')
-        def report(label, completed=0, total=0):
-            if progress is not None:
-                progress.update(label, completed, total)
+        report=job
         current_today = today
         end = date.fromisoformat(today)
         custom_start = None
@@ -156,11 +174,12 @@ class Session:
             sync_start = min(start,date(2025,6,1))
             sync_end = max(end,date.fromisoformat(current_today))
         sync_window = (sync_start.isoformat(),sync_end.isoformat())
-        gaps = self.cache.missing(*sync_window)
+        missing = self.cache.missing(*sync_window)
+        gaps = [] if offline or terrain_only else list(missing)
         had_history = bool(list(self.cache.db.execute('SELECT 1 FROM coverage LIMIT 1')))
         # Recent overlap catches late uploads, edits and deletions without
         # repeatedly fetching years of already-saved history.
-        if refresh and had_history:
+        if refresh and had_history and not offline and not terrain_only:
             recent = (max(sync_start, sync_end - timedelta(days=2)).isoformat(), sync_end.isoformat())
             gaps.append(recent)
         merged=[]
@@ -168,18 +187,25 @@ class Session:
             if merged and date.fromisoformat(first) <= date.fromisoformat(merged[-1][1]) + timedelta(days=1):
                 merged[-1]=(merged[-1][0],max(merged[-1][1],final))
             else:merged.append((first,final))
+        # Bounded listing windows make long history downloads restartable.
+        windows=[]
+        for first,final in merged:
+            cursor=date.fromisoformat(first);last=date.fromisoformat(final)
+            while cursor<=last:
+                stop=min(last,cursor+timedelta(days=89))
+                windows.append((cursor.isoformat(),stop.isoformat()));cursor=stop+timedelta(days=1)
         checked = 0
-        for first, final in merged:
+        for first, final in reversed(windows):
             report(('Checking recent runs' if had_history and first >= (end-timedelta(days=2)).isoformat() else 'Downloading missing history') +
                    ' · ' + first + ' to ' + final)
             downloaded = []
             for page in range(500):
-                batch = self.client.connectapi(self.client.garmin_connect_activities, params={
+                batch = job.request(lambda:self.client.connectapi(self.client.garmin_connect_activities, params={
                     'startDate': first, 'endDate': final,
-                    'start': str(page * 20), 'limit': '20'})
+                    'start': str(page * 20), 'limit': '20'}),'Run summaries')
                 if not batch:
                     break
-                if not isinstance(batch, list):
+                if not isinstance(batch, list) or any(not isinstance(item,dict) or 'activityId' not in item or not isinstance(item.get('startTimeLocal'),str) for item in batch):
                     raise InputError('Garmin returned an unexpected run list. Please try again.')
                 downloaded.extend(batch)
                 checked += len(batch)
@@ -195,8 +221,9 @@ class Session:
                 self.efforts.pop(identity,None)
         self.activities = self.cache.activities(*sync_window)
         self.activity_window = window
+        activity_by_id={str(a['activityId']):a for a in self.activities}
         result = normalized_runs(self.activities, sync_end.isoformat(), days, settings.get('categories', {}), easy_hr, sync_start.isoformat(), settings.get('classification_mode','native'))
-        health, weather, warnings = sync_extras(self.client,self.cache,result,settings,refresh,report,self.activities)
+        health, weather, warnings = sync_extras(self.client,self.cache,result,settings,refresh,report,self.activities,allow_download=not offline,job=job,terrain_only=terrain_only)
         report('Preparing charts · ' + str(len(result['runs'])) + ' saved sessions')
         result['run_points'] = [dict(row) for row in result['runs']
                                 if row['category'] == 'easy' and row['pace'] is not None]
@@ -210,18 +237,18 @@ class Session:
         lap_done = 0
         for run in result['runs']:
             if run['category'] == 'trial':
-                report(('Reading saved 5K effort' if run['id'] in self.efforts else 'Downloading 5K recording') +
+                report('Reading saved 5K effort' +
                        ' · ' + str(lap_done + 1) + '/' + str(lap_total) + ' · ' + run['title'][:48], lap_done, lap_total)
                 lap_done += 1
                 failed = False
                 try:
-                    effort = self.cache.detail(run['id'],'effort_v1')[1] if result.get('optional_downloads_paused') else self._effort(run['id'])
+                    effort = self.cache.detail(run['id'],'effort_v1')[1]
                 except (GarminConnectTooManyRequestsError, GarminConnectAuthenticationError):
                     raise
                 except Exception:
                     effort,failed = None,True
                 if not effort:
-                    source = next((a for a in self.activities if str(a['activityId'])==run['id']),{})
+                    source = activity_by_id.get(run['id'],{})
                     fastest = positive(source.get('fastestSplit_5000'))
                     if fastest:
                         effort = dict(duration=fastest,distance=5000,method='garmin_fastest_split')
@@ -235,20 +262,24 @@ class Session:
                     run['trial_error'] = 'Could not read the original recording. Refresh to retry.' if failed else 'No continuous 5 km in the available recording.'
                 continue
             if run['category'] in INTERVALS:
-                report(('Reading saved laps' if run['id'] in self.splits else 'Downloading laps') +
+                report('Preparing interval metrics' +
                        ' · ' + str(lap_done + 1) + '/' + str(lap_total) + ' · ' + run['title'][:48], lap_done, lap_total)
                 lap_done += 1
             if run['category'] not in INTERVALS:
                 continue
-            if result.get('optional_downloads_paused') and not self.cache.detail(run['id'],'laps')[0]:
-                result['split_failures'] += 1
+            have_laps=self.cache.detail(run['id'],'laps')[0]
+            has_summary=bool(self.cache.detail(run['id'],'interval_fit_v1')[1] or web_dashboard.interval_pace_from_split_summaries(activity_by_id.get(run['id'],{})))
+            if (offline or terrain_only or result.get('optional_downloads_paused') or settings.get('interval_mode')=='session' and has_summary) and not have_laps:
+                if not has_summary:result['split_failures'] += 1
                 continue
             try:
-                payload = self._splits(run['id'])
-            except GarminConnectTooManyRequestsError:
-                raise
-            except GarminConnectAuthenticationError:
-                raise
+                payload = job.request(lambda:self._splits(run['id']),'Interval laps')
+            except (GarminConnectTooManyRequestsError,GarminConnectAuthenticationError,GarminConnectConnectionError,OSError):
+                result['optional_downloads_paused']=True
+                warnings.append('Garmin lap downloads paused. Completed data is saved; resume later.')
+                result['split_failures']+=1
+                continue
+            except SyncPaused:raise
             except Exception:
                 result['split_failures'] += 1
                 continue
@@ -262,11 +293,44 @@ class Session:
             if settings.get('interval_mode') == 'session':
                 points = session_average(points)
             result['interval_points'].extend(points)
+        result['sync']=coverage(self.cache,result['runs'],*sync_window,settings)
         enrich(result,self.activities,self.splits,health,weather,settings,
                visible_range=window,fit_intervals=self.cache.all_details('interval_fit_v1'))
         result['warnings'] = warnings
+        result['sync_paused']=bool(result.get('optional_downloads_paused') or result.get('terrain_downloads_paused'))
+        result['cached_only'] = offline
+        result['cache_complete'] = not self.cache.missing(*sync_window)
+        result['has_saved_data'] = bool(self.activities)
         report('Charts ready · ' + str(len(result['runs'])) + ' sessions', lap_total, lap_total)
         return dict(self.status(), **result)
+
+    def sync_terrain(self,today,days,settings_json,progress=None):
+        settings=json.loads(settings_json);settings['include_terrain']=True
+        if not self.cache.db.execute('SELECT 1 FROM runs LIMIT 1').fetchone():
+            raise InputError('Refresh your activities once before downloading terrain.')
+        return self.dashboard(today,days,json.dumps(settings),progress=progress,terrain_only=True)
+
+    def cached_dashboard(self, today, days, settings_json):
+        return self.dashboard(today,days,settings_json,offline=True)
+
+    def comparison(self, today, days, settings_json):
+        from comparison_contract import sanitize_snapshot
+        data = self.cached_dashboard(today,days,settings_json)
+        if not data['has_saved_data']:
+            raise InputError('Download some dashboard history before sharing a comparison.')
+        settings = json.loads(settings_json)
+        first,last = data['history_start'],data['history_end']
+        activities = self.cache.activities(first,last)
+        for activity in activities:
+            kind = activity.get('activityType')
+            if isinstance(kind,dict):activity['activityType'] = kind.get('typeKey')
+        details = {kind:self.cache.all_details(kind) for kind in (
+            'laps','effort_v1','interval_fit_v1','hr_histogram_v1','weather_v1','terrain_v1')}
+        daily = {kind:self.cache.daily(first,last,kind) for kind in (
+            'sleep','rhr','hrv','station:KPVU','station:KSLC')}
+        payload = sanitize_snapshot(dict(schema=1,selection=dict(today=today,days=int(days),settings=settings),
+                                         activities=activities,coverage=[dict(start=a,end=b) for a,b in self.cache.db.execute('SELECT start,end FROM coverage')],details=details,daily=daily,android=data))
+        return dict(self.status(),comparison=payload)
 
     def _effort(self, identity):
         if identity not in self.efforts:
@@ -311,8 +375,7 @@ class Session:
         trials = [row for row in rows if row["category"] == "trial"][:5]
         chosen = trials + [row for row in rows if row not in trials][:20 - len(trials)]
         for row in sorted(chosen, key=lambda row: row["started"], reverse=True):
-            item = {key: value for key, value in row.items() if key not in
-                    ('average_hr', 'max_hr', 'hr_target', 'hr_below_target', 'category_reason')}
+            item = {key:row[key] for key in ('id','title','started','date','category','pace','distance','duration') if key in row}
             try:
                 item['laps'] = lap_choices(self._splits(row['id']))
             except GarminConnectTooManyRequestsError:
@@ -351,7 +414,7 @@ _session = Session()
 def call(operation, *args):
     """One JSON boundary: never allow a raw Python exception into Android logs."""
     try:
-        if operation not in ('configure_cache', 'restore', 'login', 'verify', 'runs', 'logout', 'status', 'dashboard', 'laps', 'sample'):
+        if operation not in ('configure_cache', 'restore', 'login', 'verify', 'runs', 'logout', 'status', 'dashboard', 'cached_dashboard', 'sync_terrain', 'comparison', 'laps', 'sample'):
             raise InputError('Unknown operation.')
         result = getattr(_session, operation)(*args)
         result['ok'] = True

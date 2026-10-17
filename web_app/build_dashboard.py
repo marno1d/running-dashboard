@@ -250,7 +250,10 @@ def cached_fit_metric(
     zip_path: Path,
     metric_name: str,
     compute: Any,
+    provided: dict[str, Any] | None = None,
 ) -> Any:
+    if provided is not None:
+        return provided.get(activity_id, {}).get(metric_name)
     stat = zip_path.stat()
     signature = {
         "path": str(zip_path),
@@ -564,8 +567,10 @@ def build_records(
     station_weather_by_activity: dict[str, dict[str, Any]],
     elevation_by_activity: dict[str, dict[str, Any]],
     health_days: dict[str, dict[str, Any]],
+    fit_metrics: dict[str, Any] | None = None,
+    easy_hr_threshold: float = EASY_HR_THRESHOLD,
 ) -> list[dict[str, Any]]:
-    files = activity_file_map()
+    files = activity_file_map() if fit_metrics is None else {identity: None for identity in fit_metrics}
     records: list[dict[str, Any]] = []
 
     for activity in activities:
@@ -575,7 +580,7 @@ def build_records(
 
         activity_type = type_key(activity)
         local_date = local_dt.date()
-        category = classify(activity, local_date)
+        category = classify(activity, local_date, easy_hr_threshold)
         activity_id = str(activity.get("activityId") or activity.get("id") or "")
         weather = merged_weather(
             weather_by_activity.get(activity_id, {}),
@@ -617,6 +622,7 @@ def build_records(
                 files[activity_id],
                 "best_rolling_5000m_v1",
                 lambda path=files[activity_id]: best_rolling_distance_from_fit(path, 5000.0),
+                provided=fit_metrics,
             )
         fastest_5k = (
             seconds(fit_rolling_5k.get("durationSec"))
@@ -637,6 +643,7 @@ def build_records(
                     files[activity_id],
                     "interval_active_laps_v2",
                     lambda path=files[activity_id]: interval_laps_from_fit(path),
+                    provided=fit_metrics,
                 )
             if interval_summary is None:
                 interval_summary = interval_laps
@@ -674,10 +681,11 @@ def build_records(
                 fit_cache,
                 activity_id,
                 files[activity_id],
-                f"easy_hr_under_{EASY_HR_THRESHOLD:.1f}",
+                f"easy_hr_under_{easy_hr_threshold:.1f}",
                 lambda path=files[activity_id]: hr_time_from_fit(
-                    path, EASY_HR_THRESHOLD
+                    path, easy_hr_threshold
                 ),
+                provided=fit_metrics,
             )
 
         if hr_summary:
@@ -686,8 +694,8 @@ def build_records(
             hr_total_min = hr_summary["totalSec"] / 60
             hr_source = "fit"
         elif category in EASY_CATEGORIES and avg_hr is not None:
-            hr_under_pct = 100.0 if float(avg_hr) < EASY_HR_THRESHOLD else 0.0
-            hr_over_min = 0.0 if float(avg_hr) < EASY_HR_THRESHOLD else duration_sec / 60
+            hr_under_pct = 100.0 if float(avg_hr) < easy_hr_threshold else 0.0
+            hr_over_min = 0.0 if float(avg_hr) < easy_hr_threshold else duration_sec / 60
             hr_total_min = duration_sec / 60
             hr_source = "average"
         else:

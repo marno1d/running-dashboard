@@ -22,7 +22,7 @@ def original_zip(raw):
     return result
 
 
-def station_weather(cache, activities, report, now=None):
+def station_weather(cache, activities, report, now=None, allow_fetch=True):
     now = now or datetime.now(timezone.utc)
     selected = [(a,a.get('_station_match')) for a in activities]
     required = stations.required_station_dates(selected,90)
@@ -37,16 +37,20 @@ def station_weather(cache, activities, report, now=None):
             # Historical empty responses are final; today's observations are provisional.
             if entry is None or (not entry.get('final',False) and (day < now.date() or now.timestamp()-entry.get('checked_at',0) >= 6*3600)):
                 missing.add(day)
-        for start,end in stations.group_missing_dates(missing):
+        for start,end in stations.group_missing_dates(missing) if allow_fetch else []:
             report('Station weather · '+station+' · '+start.isoformat()+' to '+end.isoformat())
             try:
+                check=getattr(report,'checkpoint',None)
+                if check is not None:check()
                 csv = stations.fetch_station_csv(station,start,end,retries=1,retry_base_delay=1)
                 rows = stations.parse_station_csv(csv)
                 for day in stations.inclusive_dates(start,end):
                     entry = dict(checked_at=now.timestamp(),final=day<now.date(),rows=[stations.observation_to_json(r) for r in rows if r['valid'].date()==day])
                     cache.save_day(day.isoformat(),'station:'+station,entry)
                     saved[day.isoformat()] = entry
-            except Exception:
+            except Exception as error:
+                from sync_job import SyncPaused
+                if isinstance(error,SyncPaused):raise
                 warnings.append('Station weather '+station+' could not update; Garmin weather is used where available.')
         rows = [stations.observation_from_json(r) for entry in saved.values() for r in entry['rows']]
         observations[station] = sorted((r for r in rows if r is not None),key=lambda r:r['valid'])
@@ -58,21 +62,21 @@ def station_weather(cache, activities, report, now=None):
     return result,warnings
 
 
-def terrain_summary(raw, activity):
+def terrain_summary(raw, activity, request_json=None):
     """Use the web sampler/provider, retaining only its aggregate result."""
     if terrain.type_key(activity) not in terrain.OUTDOOR_ELEVATION_TYPES:
-        return dict(status='skipped')
+        return dict(status='skipped',reason='no_route')
     stream = original_zip(raw)
     route = terrain.route_points_from_fit(stream)
     samples = terrain.sample_track(route,75,500) if len(route)>=2 else []
     if len(samples)<2:
-        return dict(status='skipped')
+        return dict(status='skipped',reason='no_route')
     args = Namespace(chunk_size=100,api_base=terrain.DEFAULT_API_BASE,dataset=terrain.DEFAULT_DATASET,
-                     delay=1.0,timeout=30)
-    profile = terrain.query_elevations(samples,args)
+                     delay=0 if request_json is not None else 1.05,timeout=25)
+    profile = terrain.query_elevations(samples,args,request_json=request_json) if request_json is not None else terrain.query_elevations(samples,args)
     summary = terrain.summarize_profile(profile,1.0)
     if summary['elevationGainMeters'] is None:
-        raise ValueError('Terrain elevations unavailable')
+        return dict(status='skipped',reason='no_elevation',samples=len(profile))
     stream.seek(0)
     work = terrain.profile_in_windows(profile,terrain.active_lap_windows_from_fit(stream))
     active = terrain.summarize_profile(work,1.0)
