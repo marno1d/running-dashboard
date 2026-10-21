@@ -9,7 +9,7 @@ public final class ChartInteractionTest {
         expect(ChartInteraction.direction(5,24,8),-1);
         expect(ChartInteraction.direction(-5,-24,8),-1);
         expect(ChartInteraction.direction(16,16,8),-1);
-        // Horizontal date pans do not turn into page scrolls with minor jitter.
+        // Horizontal scrubs do not turn into page scrolls with minor jitter.
         expect(ChartInteraction.direction(24,5,8),1);
         expect(ChartInteraction.direction(-24,-5,8),1);
         check(ChartInteraction.adjacentWeeks(20000,20007));

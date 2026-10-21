@@ -7,11 +7,8 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.DashPathEffect;
 import android.graphics.RectF;
-import android.view.GestureDetector;
 import android.view.MotionEvent;
-import android.view.ScaleGestureDetector;
 import android.view.View;
-import android.view.ViewConfiguration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -34,14 +31,17 @@ final class ScatterPlot extends View {
     private final ArrayList<float[]> positions=new ArrayList<>();
     private final ArrayList<JSONObject> visiblePoints=new ArrayList<>();
     private final float density;
-    private final int touchSlop;
     private final ChartViewport viewport=new ChartViewport();
     private final RectF plot=new RectF();
-    private final ScaleGestureDetector scale;
-    private final GestureDetector gestures;
-    private float downX,downY,lastX,lastY;
-    private boolean dragging,pinched,exploration=true;
+    private final ChartTouch touch;
+    private final double[] pointDates,pointValues;
+    private String[] pointSeries;
+    private double scrubDay=Double.NaN;
+    private double scrubValue=Double.NaN;
+    private final int readoutHeight;
     private JSONObject selected;
+    private ChartSeries series;
+    private int visiblePointCount;
     private Runnable viewportListener;
     static final String[] KEYS={"easy","short","medium","long","trial","other","cross_train","cross_interval","strength","warmup","easy_long","rebuild_run","other_run"};
     static final String[] LABELS={"Easy run","Short intervals","Medium intervals","Long intervals","5K time trial","Other / unclassified","Cross-training","Cross-training intervals","Strength","Warmup / cooldown","Easy Long","Rebuild run","Other run"};
@@ -50,43 +50,69 @@ final class ScatterPlot extends View {
         this(context,points,first,last,miles,trial,fixedEasy,null,null,Double.NaN,onPointClick);
     }
     ScatterPlot(Context context,JSONArray points,String first,String last,boolean miles,boolean trial,boolean fixedEasy,String valueKey,String valueLabel,double reference,OnPointClick onPointClick){
-        super(context);palette=MaterialUi.palette(context);this.bars=points.length()>0&&points.optJSONObject(0).optBoolean("bar");this.valueKey=valueKey;this.valueLabel=valueLabel;this.reference=reference;this.onPointClick=onPointClick;this.points=points;this.miles=miles;this.trial=trial;this.fixedEasy=fixedEasy;
+        super(context);palette=MaterialUi.palette(context);this.bars=points.length()>0&&points.optJSONObject(0).optBoolean("bar");this.valueKey=valueKey;this.valueLabel=valueLabel;this.reference=reference;this.onPointClick=onPointClick;this.points=points;visiblePointCount=points.length();this.miles=miles;this.trial=trial;this.fixedEasy=fixedEasy;
         start=LocalDate.parse(first).toEpochDay();end=LocalDate.parse(last).toEpochDay();density=getResources().getDisplayMetrics().density;
-        touchSlop=ViewConfiguration.get(context).getScaledTouchSlop();setFocusable(true);
-        setContentDescription("Date versus "+(valueKey!=null?valueLabel:trial?"fastest 5K time":"pace")+" chart with "+points.length()+" points. Tap a point for details. Explore the chart for zoom, date panning and an accessible data list.");
-        scale=new ScaleGestureDetector(context,new ScaleGestureDetector.SimpleOnScaleGestureListener(){
-            @Override public boolean onScaleBegin(ScaleGestureDetector detector){
-                pinched=true;getParent().requestDisallowInterceptTouchEvent(true);return viewport.ready();
+        readoutHeight=ChartReadout.reservedHeight(context);
+        setFocusable(true);pointDates=new double[points.length()];pointValues=new double[points.length()];
+        for(int i=0;i<points.length();i++){
+            JSONObject point=points.optJSONObject(i);pointDates[i]=pointValues[i]=Double.NaN;if(point==null)continue;
+            try{pointDates[i]=LocalDate.parse(point.optString("date")).toEpochDay();}catch(RuntimeException ignored){}
+            pointValues[i]=value(point);
+        }
+        touch=new ChartTouch(this,new ChartTouch.Listener(){
+            public void scrub(float x,float y){
+                scrubDay=ChartScrubber.day(x,plot.left,plot.right,viewport.xMin,viewport.xMax);
+                double fraction=Math.max(0,Math.min(1,(y-plot.top)/Math.max(1,plot.height())));
+                scrubValue=viewport.yMin+(viewport.yMax-viewport.yMin)*(valueKey!=null?1-fraction:fraction);updateScrub();invalidate();
             }
-            @Override public boolean onScale(ScaleGestureDetector detector){
-                if(plot.width()<=0||plot.height()<=0)return false;
-                viewport.zoom(detector.getScaleFactor(),(detector.getFocusX()-plot.left)/plot.width(),(valueKey!=null?1-(detector.getFocusY()-plot.top)/plot.height():(detector.getFocusY()-plot.top)/plot.height()));invalidate();notifyViewport();return true;
+            public void finish(){if(selected!=null)announceForAccessibility(readoutHeading()+", "+readoutValue());}
+            public void tap(float x,float y){openNearest(x,y);}
+            public void zoom(float factor,float x,float y){
+                if(plot.width()<=0||plot.height()<=0)return;
+                viewport.zoom(factor,(x-plot.left)/plot.width(),valueKey!=null?1-(y-plot.top)/plot.height():(y-plot.top)/plot.height());changedViewport();
             }
-        });
-        scale.setQuickScaleEnabled(false);
-        gestures=new GestureDetector(context,new GestureDetector.SimpleOnGestureListener(){
-            @Override public boolean onDown(MotionEvent e){return true;}
-            @Override public boolean onDoubleTap(MotionEvent e){pinched=true;resetZoom();return true;}
-            @Override public boolean onSingleTapConfirmed(MotionEvent e){if(!pinched&&!dragging)openNearest(e.getX(),e.getY());return true;}
+            public void pan(float dx,float dy){
+                if(plot.width()<=0||plot.height()<=0)return;
+                viewport.pan(dx/plot.width(),(valueKey!=null?-dy:dy)/plot.height());changedViewport();
+            }
+            public void reset(){resetZoom();}
         });
     }
-    void setExplorationEnabled(boolean value){exploration=value;}
+    void setSeriesVisibility(ChartSeries visibility){series=visibility;seriesVisibilityChanged();}
+    private boolean pointVisible(JSONObject point){
+        return point!=null&&(series==null||series.pointVisible(point.optString("category"),point.optString("activity_type"),point.optDouble("hr_under_percent",Double.NaN)));
+    }
+    JSONArray dataPoints(){
+        JSONArray result=new JSONArray();for(int i=0;i<points.length();i++){JSONObject point=points.optJSONObject(i);if(pointVisible(point))result.put(point);}return result;
+    }
+    void seriesVisibilityChanged(){
+        if(selected!=null&&!pointVisible(selected))selected=null;
+        rebuildSeriesIdentities();updateScrub();
+        positions.clear();visiblePoints.clear();
+        visiblePointCount=0;for(int i=0;i<points.length();i++)if(pointVisible(points.optJSONObject(i)))visiblePointCount++;
+        setContentDescription("Date versus "+(valueKey!=null?valueLabel:trial?"fastest 5K time":"pace")+" chart with "+visiblePointCount+" visible points. "+(series!=null&&series.ids.length>0?"Tap legend items to hide or show series. ":"")+"Drag horizontally to read the first enabled series. Tap a point for details. Explore for two-finger zoom and pan, or a data list.");
+        invalidate();
+    }
+    void setExplorationEnabled(boolean value){touch.setExplorationEnabled(value);}
+    int readoutHeight(){return readoutHeight;}
     String[] visibleDates(){
         long first=viewport.ready()?Math.max(start,(long)Math.ceil(viewport.xMin)):start;
         long last=viewport.ready()?Math.min(end,(long)Math.floor(viewport.xMax)):end;
         if(last<first)first=last=Math.max(start,Math.min(end,Math.round((viewport.xMin+viewport.xMax)/2)));
         return new String[]{LocalDate.ofEpochDay(first).toString(),LocalDate.ofEpochDay(last).toString()};
     }
-    void resetZoom(){viewport.reset();invalidate();notifyViewport();announceForAccessibility("Chart reset");}
+    private void changedViewport(){updateScrub();invalidate();notifyViewport();}
+    void resetZoom(){viewport.reset();changedViewport();announceForAccessibility("Chart reset");}
     boolean isZoomed(){return viewport.changed();}
     void setViewportListener(Runnable listener){viewportListener=listener;}
     private void notifyViewport(){if(viewportListener!=null)viewportListener.run();}
     void selectPoint(JSONObject point){
+        if(!pointVisible(point))return;
         if(viewport.ready()){
             long day=LocalDate.parse(point.optString("date")).toEpochDay();double v=value(point);
             if(day<viewport.xMin||day>viewport.xMax||v<viewport.yMin||v>viewport.yMax)resetZoom();
         }
-        selected=point;invalidate();if(onPointClick!=null)onPointClick.open(point);
+        scrubDay=Double.NaN;selected=point;invalidate();if(onPointClick!=null)onPointClick.open(point);
     }
     static int index(String category){for(int i=0;i<KEYS.length;i++)if(KEYS[i].equals(category))return i;return 5;}
     static String label(String category){return LABELS[index(category)];}
@@ -106,6 +132,29 @@ final class ScatterPlot extends View {
         if(valueLabel.contains("HOUR"))return "hours";
         return valueLabel.contains("DISTANCE")?(miles?"mi":"km"):"load";
     }
+    private void rebuildSeriesIdentities(){
+        pointSeries=new String[points.length()];
+        for(int i=0;i<points.length();i++){
+            JSONObject point=points.optJSONObject(i);
+            pointSeries[i]=point==null||series==null?"":series.seriesId(point.optString("category"),point.optString("activity_type"),point.optDouble("hr_under_percent",Double.NaN));
+        }
+    }
+    private void updateScrub(){
+        if(!Double.isFinite(scrubDay)||!viewport.ready())return;
+        if(pointSeries==null)rebuildSeriesIdentities();
+        int nearest=ChartScrubber.nearest(pointDates,pointValues,pointSeries,series==null?"":series.firstVisible(),scrubDay,viewport.xMin,viewport.xMax,viewport.yMin,viewport.yMax,scrubValue);
+        selected=nearest<0?null:points.optJSONObject(nearest);
+    }
+    private String readoutHeading(){
+        String target=series==null?"":series.firstVisible(),name=series==null?"":series.labelFor(target);
+        String date=selected==null?"":LocalDate.parse(selected.optString("date")).format(DateTimeFormatter.ofPattern("MMM d, yyyy",Locale.getDefault()));
+        return date+(name.isEmpty()?"":(date.isEmpty()?"":" · ")+name);
+    }
+    private String readoutValue(){
+        if(selected==null)return "No visible measurements";
+        String unit=valueKey==null?(trial?" 5K":miles?" /mi":" /km"):" "+axisTitle();
+        return axisValue(value(selected))+unit;
+    }
     @Override protected void onDraw(Canvas canvas){
         super.onDraw(canvas);positions.clear();visiblePoints.clear();
         paint.setTextSize(sp(12));paint.setTypeface(android.graphics.Typeface.create("sans-serif",0));
@@ -123,14 +172,15 @@ final class ScatterPlot extends View {
         if("hr_under_percent".equals(valueKey)||(valueLabel!=null&&valueLabel.contains("%"))){min=0;max=100;}
         double initialMin=fixedEasy?420/(miles?1:1.609344):min,initialMax=fixedEasy?600/(miles?1:1.609344):max;
         viewport.configure(start-.5,end+.5,Math.min(min,initialMin),Math.max(max,initialMax),initialMin,initialMax);
+        updateScrub();
         double minimumStep=valueKey!=null&&!valueLabel.contains("HOUR")&&!valueLabel.contains("DISTANCE")?1:0;
         double[] ticks=ChartAxis.ticks(viewport.yMin,viewport.yMax,4,valueKey==null,minimumStep);
         float labelWidth=0;for(double tick:ticks)labelWidth=Math.max(labelWidth,paint.measureText(axisValue(tick)));
-        float left=dp(6)+labelWidth+dp(10),right=getWidth()-dp(8),top=sp(12)+dp(14),bottom=getHeight()-sp(12)-dp(20);plot.set(left,top,right,bottom);
+        float left=dp(6)+labelWidth+dp(10),right=getWidth()-dp(8),top=readoutHeight+sp(12)+dp(14),bottom=getHeight()-sp(12)-dp(20);plot.set(left,top,right,bottom);
         if(right<=left||bottom<=top)return;
-        paint.setColor(palette.muted);canvas.drawText(axisTitle(),left,sp(12),paint);
+        paint.setColor(palette.muted);canvas.drawText(axisTitle(),left,readoutHeight+sp(12),paint);
         String direction="Faster ↑";
-        if(valueKey==null&&paint.measureText(axisTitle())+paint.measureText(direction)+dp(20)<right-left)canvas.drawText(direction,right-paint.measureText(direction),sp(12),paint);
+        if(valueKey==null&&paint.measureText(axisTitle())+paint.measureText(direction)+dp(20)<right-left)canvas.drawText(direction,right-paint.measureText(direction),readoutHeight+sp(12),paint);
         for(double tick:ticks){
             float fraction=(float)((tick-viewport.yMin)/(viewport.yMax-viewport.yMin));
             float y=top+(bottom-top)*(valueKey!=null?1-fraction:fraction);
@@ -148,6 +198,7 @@ final class ScatterPlot extends View {
             paint.setColor(palette.muted);canvas.drawText(label,x,bottom+sp(12)+dp(9),paint);
         }
         if(empty){paint.setTextSize(sp(14));canvas.drawText("No points",left,(top+bottom)/2,paint);return;}
+        if(visiblePointCount==0){paint.setColor(palette.muted);canvas.drawText(series!=null&&!series.anyVisible()?"All series hidden":"No visible points",left,(top+bottom)/2,paint);return;}
         if(Double.isFinite(reference)&&reference>=viewport.yMin&&reference<=viewport.yMax){
             float y=top+(bottom-top)*(float)((viewport.yMax-reference)/(viewport.yMax-viewport.yMin));
             paint.setColor(palette.chart(Color.rgb(179,78,78)));paint.setStrokeWidth(dp(1));
@@ -166,7 +217,7 @@ final class ScatterPlot extends View {
             paint.setColor(Color.argb(35,76,154,75));
             for(int i=0;i<points.length();i++){
                 JSONObject point=points.optJSONObject(i);
-                if(point==null||!point.has("range_lower"))continue;
+                if(!pointVisible(point)||!point.has("range_lower"))continue;
                 if(previous!=null){
                     long a=LocalDate.parse(previous.optString("date")).toEpochDay(),b=LocalDate.parse(point.optString("date")).toEpochDay();
                     if(b-a<=45){
@@ -182,13 +233,13 @@ final class ScatterPlot extends View {
                 previous=point;
             }
         }
-        if(selected!=null){
-            long day=LocalDate.parse(selected.optString("date")).toEpochDay();
+        if(selected!=null||Double.isFinite(scrubDay)){
+            double day=Double.isFinite(scrubDay)?scrubDay:LocalDate.parse(selected.optString("date")).toEpochDay();
             if(day>=viewport.xMin&&day<=viewport.xMax){float x=left+(right-left)*(float)((day-viewport.xMin)/(viewport.xMax-viewport.xMin));paint.setColor(palette.primary);paint.setAlpha(100);paint.setStrokeWidth(dp(1));paint.setPathEffect(new DashPathEffect(new float[]{dp(3),dp(4)},0));canvas.drawLine(x,top,x,bottom,paint);paint.setPathEffect(null);paint.setAlpha(255);}
         }
         java.util.HashMap<String,Float> markerX=new java.util.HashMap<>();
         for(int i=0;i<points.length();i++){
-            JSONObject point=points.optJSONObject(i);if(point==null)continue;double v=value(point);
+            JSONObject point=points.optJSONObject(i);if(!pointVisible(point))continue;double v=value(point);
             if(!Double.isFinite(v)||v<viewport.yMin||v>viewport.yMax)continue;
             long day;try{day=LocalDate.parse(point.optString("date")).toEpochDay();}catch(RuntimeException bad){continue;}
             if(day<viewport.xMin||day>viewport.xMax)continue;
@@ -221,6 +272,10 @@ final class ScatterPlot extends View {
             positions.add(new float[]{x,y});visiblePoints.add(point);
         }
         canvas.restore();
+        if(Double.isFinite(scrubDay)&&scrubDay>=viewport.xMin&&scrubDay<=viewport.xMax){
+            float x=left+(right-left)*(float)((scrubDay-viewport.xMin)/(viewport.xMax-viewport.xMin));
+            ChartReadout.draw(canvas,paint,palette,density,sp(12),getWidth(),x,readoutHeading(),readoutValue());
+        }
     }
     private void openNearest(float x,float y){
         int nearest=-1;double distance=dp(32)*dp(32);
@@ -230,22 +285,7 @@ final class ScatterPlot extends View {
         performClick();if(nearest>=0)selectPoint(visiblePoints.get(nearest));
     }
     @Override public boolean onTouchEvent(MotionEvent event){
-        if(!isEnabled())return false;
-        int action=event.getActionMasked();
-        if(action==MotionEvent.ACTION_DOWN){downX=lastX=event.getX();downY=lastY=event.getY();dragging=false;pinched=false;}
-        if(event.getPointerCount()>1){pinched=true;if(!exploration){getParent().requestDisallowInterceptTouchEvent(false);return false;}getParent().requestDisallowInterceptTouchEvent(true);}
-        if(exploration)scale.onTouchEvent(event);gestures.onTouchEvent(event);
-        if(action==MotionEvent.ACTION_MOVE&&!pinched&&event.getPointerCount()==1){
-            float x=event.getX(),y=event.getY();int direction=ChartInteraction.direction(x-downX,y-downY,touchSlop);
-            if(direction<0&&!dragging){getParent().requestDisallowInterceptTouchEvent(false);return false;}
-            if(direction>0&&exploration&&viewport.changed()){
-                dragging=true;getParent().requestDisallowInterceptTouchEvent(true);
-                if(plot.width()>0){viewport.pan((x-lastX)/plot.width(),0);invalidate();notifyViewport();}
-            }else if(direction!=0)dragging=true;
-            lastX=x;lastY=y;
-        }
-        if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL)getParent().requestDisallowInterceptTouchEvent(false);
-        return true;
+        return isEnabled()&&touch.onTouchEvent(event);
     }
     @Override public boolean performClick(){super.performClick();return true;}
 }

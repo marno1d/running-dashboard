@@ -2,7 +2,7 @@
 from datetime import date, timedelta
 import json
 import logging
-from training import positive, normalized_runs, work_intervals, session_average, lap_choices, INTERVALS, history_start
+from training import positive, normalized_runs, work_intervals, lap_choices, INTERVALS, history_start
 
 from run_cache import RunCache
 from dashboard_metrics import enrich, number
@@ -148,6 +148,8 @@ class Session:
         settings = json.loads(settings_json)
         if not isinstance(settings, dict):
             raise InputError('Invalid training settings.')
+        # Older installs and saved comparison inputs may still request rep plots.
+        settings['interval_mode'] = 'session'
         settings['custom_range'] = days == -1
         settings['all_range'] = days == 0
         easy_hr = int(settings.get('easy_hr', 134))
@@ -269,7 +271,7 @@ class Session:
                 continue
             have_laps=self.cache.detail(run['id'],'laps')[0]
             has_summary=bool(self.cache.detail(run['id'],'interval_fit_v1')[1] or web_dashboard.interval_pace_from_split_summaries(activity_by_id.get(run['id'],{})))
-            if (offline or terrain_only or result.get('optional_downloads_paused') or settings.get('interval_mode')=='session' and has_summary) and not have_laps:
+            if (offline or terrain_only or result.get('optional_downloads_paused') or has_summary) and not have_laps:
                 if not has_summary:result['split_failures'] += 1
                 continue
             try:
@@ -290,9 +292,6 @@ class Session:
             run['work_reps'] = len(points)
             if not points:
                 result['missing_intervals'] += 1
-            if settings.get('interval_mode') == 'session':
-                points = session_average(points)
-            result['interval_points'].extend(points)
         result['sync']=coverage(self.cache,result['runs'],*sync_window,settings)
         enrich(result,self.activities,self.splits,health,weather,settings,
                visible_range=window,fit_intervals=self.cache.all_details('interval_fit_v1'))
@@ -319,6 +318,7 @@ class Session:
         if not data['has_saved_data']:
             raise InputError('Download some dashboard history before sharing a comparison.')
         settings = json.loads(settings_json)
+        settings['interval_mode'] = 'session'
         first,last = data['history_start'],data['history_end']
         activities = self.cache.activities(first,last)
         for activity in activities:

@@ -6,3 +6,9 @@ run(JAVA/'java','-cp',str(BUILD/'classes')+':'+str(output),'dev.rundashboard.app
 
 run(JAVA/'javac','-cp',BUILD/'classes','-d',output,ROOT/'tests/java/dev/rundashboard/app/ChartInteractionTest.java')
 run(JAVA/'java','-cp',str(BUILD/'classes')+':'+str(output),'dev.rundashboard.app.ChartInteractionTest')
+
+run(JAVA/'javac','-cp',BUILD/'classes','-d',output,ROOT/'tests/java/dev/rundashboard/app/ChartSeriesTest.java')
+run(JAVA/'java','-cp',str(BUILD/'classes')+':'+str(output),'dev.rundashboard.app.ChartSeriesTest')
+
+run(JAVA/'javac','-cp',BUILD/'classes','-d',output,ROOT/'tests/java/dev/rundashboard/app/ChartScrubberTest.java')
+run(JAVA/'java','-cp',str(BUILD/'classes')+':'+str(output),'dev.rundashboard.app.ChartScrubberTest')

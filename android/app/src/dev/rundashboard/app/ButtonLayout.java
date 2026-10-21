@@ -10,6 +10,18 @@ final class ButtonLayout {
         for(int i=0;i<widths.length;i++)widths[i]=equal?(fits?slot:available):Math.min(available,Math.max(0,preferred[i]));
         return widths;
     }
+    /** Keep four metrics together when readable, then use two columns or one. */
+    static int[] metricWidths(int available,int[] preferred,int gap){
+        available=Math.max(0,available);int columns=Math.min(4,preferred.length);
+        if(columns==0)return new int[0];
+        while(columns>1){
+            int slot=Math.max(0,(available-gap*(columns-1))/columns);boolean fits=true;
+            for(int width:preferred)if(width>slot)fits=false;
+            if(fits)break;columns=(columns+1)/2;
+        }
+        int slot=Math.max(0,(available-gap*(columns-1))/columns);int[] widths=new int[preferred.length];
+        java.util.Arrays.fill(widths,slot);return widths;
+    }
     static final class Plan {
         final int[] left,top;
         final int height;

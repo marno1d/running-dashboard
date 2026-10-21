@@ -44,6 +44,7 @@ public final class MainActivity extends Activity {
     private TextView syncSheetStatus;
     private Button logButton;
     private ScrollView scroll;
+    private PullRefreshLayout pullRefresh;
     private TextView heading;
     private final MaterialUi.NavigationItem[] tabs=new MaterialUi.NavigationItem[SCREEN_COUNT];
     private int screen, visibleRuns=30;
@@ -68,7 +69,7 @@ public final class MainActivity extends Activity {
     private JSONObject settings() throws Exception {
         JSONObject state=new JSONObject(preferences.getString("settings","{}"));
         state.put("easy_hr",preferences.getInt("easy_hr",134));
-        state.put("interval_mode",preferences.getString("interval_mode",state.optString("interval_mode","session")));
+        state.put("interval_mode","session");
         state.put("max_hr",preferences.getInt("max_hr",191));
         state.put("include_recovery",preferences.getBoolean("include_recovery",true));
         state.put("include_recordings",preferences.getBoolean("include_recordings",true));
@@ -120,7 +121,8 @@ public final class MainActivity extends Activity {
         scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setClipToPadding(false);
         content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(20),dp(8),dp(20),dp(24));scroll.addView(content);
-        root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        pullRefresh=new PullRefreshLayout(this,scroll,this::loadRuns);
+        root.addView(pullRefresh,new LinearLayout.LayoutParams(-1,0,1));
         statusBar=section();statusBar.setBackgroundColor(palette.high);statusBar.setPadding(dp(16),dp(8),dp(16),dp(8));
         LinearLayout status=section();
         message=text("Starting…",12,muted,false);message.setMaxLines(2);message.setEllipsize(TextUtils.TruncateAt.END);
@@ -320,6 +322,8 @@ public final class MainActivity extends Activity {
         if(logView!=null)logView.setText(syncLog.toString());if(syncSheetStatus!=null)syncSheetStatus.setText(label);if(logButton!=null)logButton.setVisibility(syncRunning?View.VISIBLE:View.GONE);
     }
     private void updateChrome(){
+        pullRefresh.setRefreshEnabled(authenticated&&!busy&&screen!=PROFILE);
+        pullRefresh.setRefreshing(syncRunning);
         heading.setText(new String[]{"Trends","Sessions","Interval targets","Profile"}[screen]);
         refreshButton.setVisibility(authenticated?View.VISIBLE:View.GONE);refreshButton.setEnabled(true);
         refreshButton.setContentDescription(syncRunning?"Sync in progress. Open controls":"Sync training data");
@@ -333,11 +337,20 @@ public final class MainActivity extends Activity {
         Button range=chipButton(labels[selected]+" ▾",false,()->new AlertDialog.Builder(this).setTitle("Date range")
             .setSingleChoiceItems(choices,chosen,(dialog,which)->{dialog.dismiss();if(windows[which]==-1)chooseDates();else changeRange(windows[which]);}).setNegativeButton("Cancel",null).show());
         range.setEnabled(!busy);rangeBar.addView(range,new LinearLayout.LayoutParams(-2,-2));
-        if(screen==TRENDS){
-            int count=(adjusted("adjust_elevation")?1:0)+(adjusted("adjust_temperature")?1:0);
-            Button adjustments=chipButton(count==0?"Adjustments ▾":"Adjustments · "+count+" ▾",count>0,this::editAdjustments);adjustments.setEnabled(!busy);
-            adjustments.setContentDescription("Pace adjustments. "+adjustmentLabel()+". Open options.");
-            rangeBar.addView(adjustments);
+        if(screen==TRENDS||screen==SESSIONS){
+            boolean elevation=adjusted("adjust_elevation"),weather=adjusted("adjust_temperature"),both=elevation&&weather,any=elevation||weather;
+            int foreground=any?palette.onPrimaryContainer:muted;
+            LinearLayout adjustments=new LinearLayout(this);adjustments.setGravity(Gravity.CENTER_VERTICAL);adjustments.setBaselineAligned(false);
+            adjustments.setBackground(any?shape(palette.primaryContainer,16):outlined(palette.surface,16));
+            Button toggle=chipButton("Adjustments · "+(both?"On":any?"1":"Off"),any,()->applyAdjustments(!both,!both));
+            toggle.setPadding(dp(12),dp(8),dp(12),dp(8));toggle.setBackground(MaterialUi.ripple(this,Color.TRANSPARENT,16,foreground));toggle.setEnabled(!busy);
+            String state=both?"Both on":elevation?"Elevation only":weather?"Weather only":"Both off";
+            toggle.setContentDescription("Pace adjustments. "+state+". Turn both "+(both?"off":"on")+".");
+            adjustments.addView(toggle,new LinearLayout.LayoutParams(0,-2,1));
+            View divider=new View(this);divider.setBackgroundColor(palette.outline);adjustments.addView(divider,new LinearLayout.LayoutParams(dp(1),dp(24)));
+            Button more=iconButton(MaterialUi.Icon.MORE,"Choose elevation and weather adjustments separately",()->{if(!busy)editAdjustments();});
+            more.setTooltipText("Choose individual adjustments");more.setEnabled(!busy);more.setBackground(MaterialUi.ripple(this,Color.TRANSPARENT,16,foreground));
+            adjustments.addView(more,new LinearLayout.LayoutParams(dp(48),dp(48)));rangeBar.addView(adjustments);
         }
         for(int i=0;i<tabs.length;i++)tabs[i].setActive(screen==i);
     }
@@ -413,9 +426,6 @@ public final class MainActivity extends Activity {
         segmented(display,new String[]{"System","Light","Dark"},appearanceIndex,choice->{if(!appearances[choice].equals(appearance)){preferences.edit().putString("appearance",appearances[choice]).apply();recreate();}});
         addText(display,"Pace & distance",14,muted,true,20);
         segmented(display,new String[]{"Miles","Kilometres"},miles?0:1,choice->{boolean useMiles=choice==0;if(miles!=useMiles){miles=useMiles;preferences.edit().putBoolean("miles",miles).apply();renderProfile();}});
-        addText(display,"Interval points",14,muted,true,20);
-        boolean average="session".equals(setting("interval_mode","session"));
-        segmented(display,new String[]{"Repetitions","Session average"},average?1:0,choice->{String mode=choice==1?"session":"rep";if(!mode.equals(setting("interval_mode","session"))){preferences.edit().putString("interval_mode",mode).apply();profileDirty=true;renderProfile();}});
         addText(display,"5K times always use minutes:seconds.",12,muted,false,16);
         LinearLayout sync=card();addText(sync,"Data sources",22,ink,false,0);
         String[] syncKeys={"full_history","include_recovery","include_weather","include_station_weather","include_recordings","include_terrain"};String[] syncLabels={"Use full history for predictions and targets","Download sleep, resting HR & HRV","Download Garmin activity weather","Prefer nearby KPVU / KSLC station weather","Read original FIT interval and HR metrics","Terrain elevation: send sampled routes to OpenTopoData"};
@@ -483,12 +493,18 @@ public final class MainActivity extends Activity {
     private String adjustmentLabel(){
         return adjusted("adjust_elevation")?(adjusted("adjust_temperature")?"Elevation + weather":"Elevation"):(adjusted("adjust_temperature")?"Weather":"No condition adjustments");
     }
+    private void applyAdjustments(boolean elevation,boolean weather){
+        try{
+            JSONObject state=settings();state.put("adjust_elevation",elevation);state.put("adjust_temperature",weather);
+            preferences.edit().putString("settings",state.toString()).apply();loadDashboard(false);
+        }catch(Exception error){message.setText("Could not save pace adjustments.");}
+    }
     private void editAdjustments(){
         LinearLayout form=section();addText(form,"Show equivalent pace for flat or cool conditions where measurements are available. Recorded values remain available in point details.",14,muted,false,8);
         Switch elevation=new Switch(this),weather=new Switch(this);elevation.setText("Elevation");weather.setText("Weather · temperature / dew point");
         elevation.setTextColor(ink);weather.setTextColor(ink);elevation.setMinHeight(dp(64));weather.setMinHeight(dp(64));elevation.setChecked(adjusted("adjust_elevation"));weather.setChecked(adjusted("adjust_temperature"));
         form.addView(elevation,new LinearLayout.LayoutParams(-1,-2));form.addView(weather,new LinearLayout.LayoutParams(-1,-2));
-        bottomSheet("Pace adjustments",form,"Apply adjustments",dialog->{saveSetting("adjust_elevation",elevation.isChecked());saveSetting("adjust_temperature",weather.isChecked());dialog.dismiss();loadDashboard(false);});
+        bottomSheet("Pace adjustments",form,"Apply adjustments",dialog->{dialog.dismiss();applyAdjustments(elevation.isChecked(),weather.isChecked());});
     }
     private void localRender(){int position=scroll.getScrollY();renderRuns(null);scroll.post(()->scroll.scrollTo(0,position));}
     private LinearLayout section(){LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);return box;}
@@ -543,13 +559,11 @@ public final class MainActivity extends Activity {
         }
         content.addView(sections,new LinearLayout.LayoutParams(-1,-2));
         if("pace".equals(selected)){
-            boolean average="session".equals(setting("interval_mode","session"));
-            chartCard("Interval pace",average?"Session averages":"Work repetitions",data.optJSONArray("interval_points"),false,new String[]{"short","medium","long"});
+            chartCard("Interval pace","Session averages",data.optJSONArray("interval_points"),false,new String[]{"short","medium","long"});
             chartCard("Easy pace","Road, treadmill and trail",data.optJSONArray("run_points"),false,new String[]{"easy"});heartCard();
         }else if("load".equals(selected))weeklyCard();
         else if("recovery".equals(selected))recoveryCard();
         else predictionCard();
-        recentSessions();
         JSONArray warnings=data.optJSONArray("warnings");if(warnings!=null)for(int i=0;i<warnings.length();i++)addText(content,warnings.optString(i),14,muted,false,8);
     }
     private void chartHeader(LinearLayout panel,String title,Runnable options){
@@ -568,14 +582,41 @@ public final class MainActivity extends Activity {
         parent.addView(group,new LinearLayout.LayoutParams(-1,-2));return group;
     }
     private int checkedChoice(RadioGroup group){return group.indexOfChild(group.findViewById(group.getCheckedRadioButtonId()));}
-    private void chartLegend(LinearLayout panel,String[] labels,String[] categories,int[] markers){
-        MaterialUi.ButtonGroup row=new MaterialUi.ButtonGroup(this,false);row.setPadding(0,dp(12),0,dp(4));
-        for(int i=0;i<labels.length;i++){
-            TextView item=text(labels[i],12,muted,false);item.setPadding(0,dp(4),dp(4),dp(4));
-            MaterialUi.Marker marker=new MaterialUi.Marker(markers[i],palette.chart(ScatterPlot.color(categories[i])));marker.setBounds(0,0,dp(14),dp(14));
-            item.setCompoundDrawables(marker,null,null,null);item.setCompoundDrawablePadding(dp(4));row.addView(item);
+    private void chartLegend(LinearLayout panel,ChartSeries series,Runnable changed){
+        if(series.ids.length==0)return;
+        MaterialUi.ButtonGroup row=new MaterialUi.ButtonGroup(this,false);row.setPadding(0,dp(8),0,dp(4));
+        Button[] items=new Button[series.ids.length];MaterialUi.Marker[] symbols=new MaterialUi.Marker[items.length];
+        for(int i=0;i<items.length;i++){
+            final int index=i;String id=series.ids[i];
+            Button item=actionButton(series.labels[i],false,()->preferences.edit().putBoolean(series.preferenceKey(id),!series.isVisible(id)).apply());
+            item.setTextSize(12);item.setPadding(dp(8),dp(8),dp(8),dp(8));item.setBackground(MaterialUi.ripple(this,Color.TRANSPARENT,12,palette.primary));
+            MaterialUi.Marker marker=new MaterialUi.Marker(series.markers[i],palette.chart(ScatterPlot.color(series.colors[i])));marker.setBounds(0,0,dp(14),dp(14));
+            item.setCompoundDrawables(marker,null,null,null);item.setCompoundDrawablePadding(dp(4));
+            item.setAccessibilityDelegate(new View.AccessibilityDelegate(){
+                @Override public void onInitializeAccessibilityNodeInfo(View host,android.view.accessibility.AccessibilityNodeInfo info){
+                    super.onInitializeAccessibilityNodeInfo(host,info);info.setClassName("android.widget.CheckBox");info.setCheckable(true);info.setChecked(series.isVisible(series.ids[index]));
+                }
+            });
+            items[i]=item;symbols[i]=marker;row.addView(item);
         }
-        panel.addView(row,new LinearLayout.LayoutParams(-1,-2));
+        Runnable refresh=()->{
+            for(int i=0;i<items.length;i++){
+                String id=series.ids[i];boolean shown=preferences.getBoolean(series.preferenceKey(id),true);series.setVisible(id,shown);
+                items[i].setTextColor(shown?ink:muted);symbols[i].setAlpha(shown?255:90);
+                int flags=items[i].getPaintFlags();items[i].setPaintFlags(shown?flags&~android.graphics.Paint.STRIKE_THRU_TEXT_FLAG:flags|android.graphics.Paint.STRIKE_THRU_TEXT_FLAG);
+                items[i].setContentDescription(series.labels[i]+" series. "+(shown?"Shown. Tap to hide.":"Hidden. Tap to show."));
+            }
+            if(changed!=null)changed.run();
+        };
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener listener=(prefs,key)->{
+            if(key==null){refresh.run();return;}
+            for(String id:series.ids)if(series.preferenceKey(id).equals(key)){refresh.run();return;}
+        };
+        row.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){
+            public void onViewAttachedToWindow(View view){preferences.registerOnSharedPreferenceChangeListener(listener);refresh.run();}
+            public void onViewDetachedFromWindow(View view){preferences.unregisterOnSharedPreferenceChangeListener(listener);}
+        });
+        refresh.run();panel.addView(row,new LinearLayout.LayoutParams(-1,-2));
     }
     private void predictionOptions(){
         LinearLayout body=section();RadioGroup mode=chartChoices(body,"Compare pace",new String[]{"Recorded effort","HR-adjusted effort"},"intensity".equals(setting("prediction_mode","observed"))?1:0);
@@ -584,7 +625,6 @@ public final class MainActivity extends Activity {
         for(int i=0;i<keys.length;i++){CheckBox choice=new CheckBox(this);choice.setText(labels[i]);choice.setTextSize(15);choice.setTextColor(ink);choice.setMinHeight(dp(48));choice.setChecked(preferences.getBoolean("show_"+keys[i],true));body.addView(choice,new LinearLayout.LayoutParams(-1,-2));choices[i]=choice;}
         addText(body,"Measured points come from recorded 5K efforts. Dashed lines are calibrated estimates. Easy estimates need at least two nearby trials. Missing condition data stays unadjusted.",14,muted,false,12);
         bottomSheet("5K chart settings",body,"Apply",dialog->{
-            boolean any=false;for(CheckBox choice:choices)any|=choice.isChecked();if(!any){Toast.makeText(this,"Choose at least one series",Toast.LENGTH_SHORT).show();return;}
             for(int i=0;i<keys.length;i++)preferences.edit().putBoolean("show_"+keys[i],choices[i].isChecked()).apply();
             saveSetting("prediction_mode",checkedChoice(mode)==1?"intensity":"observed");dialog.dismiss();loadDashboard(false);
         });
@@ -593,11 +633,9 @@ public final class MainActivity extends Activity {
         LinearLayout body=section();String key=easy?"easy_mode":"interval_pace_mode";
         RadioGroup mode=chartChoices(body,"Compare pace",new String[]{"Recorded effort","HR-adjusted effort"},"intensity".equals(setting(key,"observed"))?1:0);
         RadioGroup scale=easy?chartChoices(body,"Pace scale",new String[]{"Fit to all measurements","Fixed 7:00–10:00 min/mile"},preferences.getBoolean("easy_auto_scale",true)?0:1):null;
-        RadioGroup intervals=easy?null:chartChoices(body,"Interval points",new String[]{"Session averages","Individual work repetitions"},"session".equals(setting("interval_mode","session"))?0:1);
         bottomSheet(easy?"Easy pace settings":"Interval pace settings",body,"Apply",dialog->{
             saveSetting(key,checkedChoice(mode)==1?"intensity":"observed");
             if(easy)preferences.edit().putBoolean("easy_auto_scale",checkedChoice(scale)==0).apply();
-            else{String value=checkedChoice(intervals)==0?"session":"rep";preferences.edit().putString("interval_mode",value).apply();saveSetting("interval_mode",value);}
             dialog.dismiss();loadDashboard(false);
         });
     }
@@ -613,16 +651,9 @@ public final class MainActivity extends Activity {
         JSONArray estimates=dashboardData.optJSONArray("prediction_points");JSONObject estimate=latestPoint(estimates);
         if(estimate!=null){addText(panel,raceTime(estimate.optDouble("duration")),32,ink,false,8);addText(panel,"Latest interval estimate · "+estimate.optString("date"),13,muted,false,2);}
         JSONArray points=new JSONArray();String[] keys={"trial_points","prediction_points","easy_prediction_points"};
-        String[] names={"Measured","Intervals","Easy"},categories={"trial","prediction","easy_prediction"};int[] markers={1,2,3};
-        java.util.ArrayList<String> visibleNames=new java.util.ArrayList<>(),visibleCategories=new java.util.ArrayList<>();java.util.ArrayList<Integer> visibleMarkers=new java.util.ArrayList<>();
-        for(int i=0;i<keys.length;i++)if(preferences.getBoolean("show_"+keys[i],true)){
-            JSONArray source=dashboardData.optJSONArray(keys[i]);if(source!=null)for(int j=0;j<source.length();j++)points.put(source.optJSONObject(j));
-            visibleNames.add(names[i]);visibleCategories.add(categories[i]);visibleMarkers.add(markers[i]);
-        }
-        int[] shapes=new int[visibleMarkers.size()];for(int i=0;i<shapes.length;i++)shapes[i]=visibleMarkers.get(i);
-        chartLegend(panel,visibleNames.toArray(new String[0]),visibleCategories.toArray(new String[0]),shapes);
+        for(String key:keys){JSONArray source=dashboardData.optJSONArray(key);if(source!=null)for(int j=0;j<source.length();j++)points.put(source.optJSONObject(j));}
         addText(panel,"Dashed lines are estimates · "+adjustmentLabel()+("intensity".equals(setting("prediction_mode","observed"))?" · HR-adjusted effort":""),12,muted,false,4);
-        addInteractivePlot(panel,"5K performance",points,null,null,Double.NaN,true,false,false);
+        addInteractivePlot(panel,"5K performance",points,null,null,Double.NaN,true,false,ChartSeries.PREDICTION,false);
     }
     private void heartCard(){
         LinearLayout panel=card();boolean average=preferences.getBoolean("hr_average_view",false);
@@ -633,18 +664,15 @@ public final class MainActivity extends Activity {
         JSONArray points=dashboardData.optJSONArray("hr_points");JSONObject latest=latestPoint(points);
         if(latest!=null){addText(panel,Math.round(latest.optDouble(average?"average_hr":"hr_under_percent"))+(average?" bpm":"%"),32,ink,false,8);addText(panel,"Latest "+(average?"average HR":"time below ceiling")+" · "+latest.optString("date"),13,muted,false,2);}
         addText(panel,"Ceiling: below "+preferences.getInt("easy_hr",134)+" bpm",13,muted,false,12);
-        chartLegend(panel,new String[]{"≥90% below","75–89%","<75%"},new String[]{"easy","cross_train","trial"},new int[]{0,0,0});
-        addInteractivePlot(panel,"Easy effort",points,average?"average_hr":"hr_under_percent",average?"AVERAGE HR · BPM":"TIME BELOW CEILING · %",average?preferences.getInt("easy_hr",134):Double.NaN,false,false,false);
+        addInteractivePlot(panel,"Easy effort",points,average?"average_hr":"hr_under_percent",average?"AVERAGE HR · BPM":"TIME BELOW CEILING · %",average?preferences.getInt("easy_hr",134):Double.NaN,false,false,ChartSeries.HEART,false);
     }
     private void chartCard(String title,String subtitle,JSONArray points,boolean trial,String[] categories){
         boolean easy=categories.length==1&&"easy".equals(categories[0]);
         LinearLayout panel=card();chartHeader(panel,title,()->paceOptions(easy));
         JSONObject latest=latestPoint(points);
         if(latest!=null){addText(panel,ScatterPlot.pace(latest.optDouble("pace"),miles)+(miles?" /mi":" /km"),32,ink,false,8);addText(panel,"Latest plotted pace · "+latest.optString("date"),13,muted,false,2);}
-        if(easy)chartLegend(panel,new String[]{"Road / treadmill","Trail"},new String[]{"easy","easy"},new int[]{0,4});
-        else chartLegend(panel,new String[]{"Short","Medium","Long"},categories,new int[]{2,3,0});
         addText(panel,(easy?"Shading: typical pace range":subtitle)+" · "+adjustmentLabel()+("intensity".equals(setting(easy?"easy_mode":"interval_pace_mode","observed"))?" · HR-adjusted effort":""),12,muted,false,4);
-        addInteractivePlot(panel,title,points,null,null,Double.NaN,trial,easy&&!preferences.getBoolean("easy_auto_scale",true),false);
+        addInteractivePlot(panel,title,points,null,null,Double.NaN,trial,easy&&!preferences.getBoolean("easy_auto_scale",true),easy?ChartSeries.EASY:ChartSeries.INTERVAL,false);
     }
     private JSONObject findRun(JSONObject point){
         if(dashboardData==null||point==null)return null;String id=point.optString("id");JSONArray runs=dashboardData.optJSONArray("runs");
@@ -668,12 +696,12 @@ public final class MainActivity extends Activity {
         }
         double raw=run==null?point.optDouble("pace"):run.optDouble("pace");
         if(category.equals("short")||category.equals("medium")||category.equals("long")){
-            raw=point.optInt("lap")>0?point.optDouble("duration")/point.optDouble("distance")*1000:run==null?point.optDouble("work_pace"):run.optDouble("work_pace");
+            raw=run==null?point.optDouble("work_pace"):run.optDouble("work_pace");
         }
         double shown=point.optDouble("pace");String unit=miles?" /mi":" /km";
         String mode=setting((category.equals("easy")||category.equals("easy_long"))?"easy_mode":"interval_pace_mode","observed");
         String adjustments=adjustmentLabel()+(mode.equals("intensity")?" · HR-adjusted effort":"");
-        return heading+"\nRecorded pace "+ScatterPlot.pace(raw,miles)+unit+"\nShown pace "+ScatterPlot.pace(shown,miles)+unit+"\n"+adjustments+" where available"+(point.optInt("lap")>0?" · work lap "+point.optInt("lap"):"");
+        return heading+"\nRecorded pace "+ScatterPlot.pace(raw,miles)+unit+"\nShown pace "+ScatterPlot.pace(shown,miles)+unit+"\n"+adjustments+" where available";
     }
     private void showPointSheet(String title,JSONObject point,String key,String label,boolean trial){
         LinearLayout body=section();addText(body,pointDescription(point,key,label,trial),16,ink,false,12).setTextIsSelectable(true);
@@ -693,33 +721,37 @@ public final class MainActivity extends Activity {
         };
         new AlertDialog.Builder(this).setTitle(title+" · data").setAdapter(adapter,(d,w)->choose.accept(w)).setNegativeButton("Close",null).show();
     }
-    private void addInteractivePlot(LinearLayout panel,String title,JSONArray input,String key,String label,double reference,boolean trial,boolean fixedEasy,boolean expanded){
+    private void addInteractivePlot(LinearLayout panel,String title,JSONArray input,String key,String label,double reference,boolean trial,boolean fixedEasy,String seriesMode,boolean expanded){
+        ChartSeries series=new ChartSeries(seriesMode);
         final JSONArray points=new JSONArray();
         if(input!=null)for(int i=0;i<input.length();i++){
             JSONObject point=input.optJSONObject(i);if(point==null)continue;double value=point.optDouble(key!=null?key:trial?"duration":"pace",Double.NaN);
             if(Double.isFinite(value)&&(key!=null||value>0))points.put(point);
         }
-        if(points.length()==0){addText(panel,"No matching measurements in this date range.",15,muted,false,16);return;}
+        if(points.length()==0){chartLegend(panel,series,null);addText(panel,"No matching measurements in this date range.",15,muted,false,16);return;}
         final boolean weekly=points.optJSONObject(0).optBoolean("bar");
         String start=dashboardData.optString("start");if(weekly)start=LocalDate.parse(start).minusDays(6).toString();
-        if(expanded){addText(panel,dateSpan(dashboardData.optString("start"),dashboardData.optString("end")),14,ink,false,0);addText(panel,"Pinch to zoom · drag when zoomed · double-tap to reset",13,muted,false,8);}
+        if(expanded){addText(panel,dateSpan(dashboardData.optString("start"),dashboardData.optString("end")),14,ink,false,0);addText(panel,"Drag to read · two fingers to zoom / pan · double-tap to reset",13,muted,false,8);}
         ScatterPlot plot=new ScatterPlot(this,points,start,dashboardData.optString("end"),miles,trial,fixedEasy,key,label,reference,point->showPointSheet(weekly?"Week details":"Point details",point,key,label,trial));
-        plot.setExplorationEnabled(expanded);int height=chartHeight(expanded?360:240);panel.addView(plot,new LinearLayout.LayoutParams(-1,height));
+        plot.setSeriesVisibility(series);chartLegend(panel,series,plot::seriesVisibilityChanged);
+        plot.setExplorationEnabled(expanded);int height=chartHeight(expanded?360:240)+plot.readoutHeight();panel.addView(plot,new LinearLayout.LayoutParams(-1,height));
         if(fixedEasy){int outside=0;for(int i=0;i<points.length();i++){double pace=points.optJSONObject(i).optDouble("pace")*1.609344;if(pace<420||pace>600)outside++;}if(outside>0)addText(panel,outside+" runs outside this fixed scale. Choose Fit to all measurements in chart settings to include them.",14,muted,false,4);}
-        addText(panel,weekly?"Tap a bar for its week's details":"Tap a point for details",12,muted,false,6);
+        addText(panel,weekly?"Drag to read · tap a bar for week details":series.ids.length>0?"Drag to read the first enabled legend item · tap a point for details":"Drag to read · tap a point for details",12,muted,false,6);
         MaterialUi.ButtonGroup actions=new MaterialUi.ButtonGroup(this,true);actions.setPadding(0,dp(12),0,0);panel.addView(actions,new LinearLayout.LayoutParams(-1,-2));
-        if(!expanded){actions.addView(actionButton("Explore chart",false,()->expandPlot(title,points,key,label,reference,trial,fixedEasy)));return;}
+        if(!expanded){actions.addView(actionButton("Explore chart",false,()->expandPlot(title,points,key,label,reference,trial,fixedEasy,seriesMode)));return;}
         actions.addView(actionButton("View data",false,()->{
-            String[] rows=new String[points.length()];for(int i=0;i<rows.length;i++)rows[i]=pointDescription(points.optJSONObject(i),key,label,trial);
-            chartData(title,rows,w->plot.selectPoint(points.optJSONObject(w)));
+            JSONArray visible=plot.dataPoints();
+            if(visible.length()==0){new AlertDialog.Builder(this).setTitle(title+" · data").setMessage("No visible points. Turn a series on in the legend.").setPositiveButton("Close",null).show();return;}
+            String[] rows=new String[visible.length()];for(int i=0;i<rows.length;i++)rows[i]=pointDescription(visible.optJSONObject(i),key,label,trial);
+            chartData(title,rows,w->plot.selectPoint(visible.optJSONObject(w)));
         }));
         Button reset=actionButton("Reset zoom",false,plot::resetZoom);actions.addView(reset);reset.setVisibility(View.GONE);
         Button filter=button(panel,"Use visible dates across app",false,()->applyChartRange(plot.visibleDates()));filter.setVisibility(View.GONE);
         plot.setViewportListener(()->{boolean zoomed=plot.isZoomed();reset.setVisibility(zoomed?View.VISIBLE:View.GONE);filter.setVisibility(zoomed?View.VISIBLE:View.GONE);});
     }
-    private void expandPlot(String title,JSONArray points,String key,String label,double reference,boolean trial,boolean fixedEasy){
+    private void expandPlot(String title,JSONArray points,String key,String label,double reference,boolean trial,boolean fixedEasy,String seriesMode){
         LinearLayout panel=section();panel.setPadding(dp(16),dp(12),dp(16),dp(20));
-        addInteractivePlot(panel,title,points,key,label,reference,trial,fixedEasy,true);showExpanded(title,panel);
+        addInteractivePlot(panel,title,points,key,label,reference,trial,fixedEasy,seriesMode,true);showExpanded(title,panel);
     }
     private void showExpanded(String title,LinearLayout body){
         Dialog dialog=fullScreen(title,body,null);expandedChart=dialog;
@@ -751,7 +783,7 @@ public final class MainActivity extends Activity {
         if(latest!=null){addText(panel,String.format(Locale.getDefault(),"%.1f",latest.optDouble("value"))+(metric.endsWith("minutes")?" h":metric.equals("run_miles")?(miles?" mi":" km"):metric.equals("interval_percent")?"%":""),32,ink,false,8);addText(panel,label+" · week of "+latest.optString("date"),13,muted,false,2);}
         addText(panel,"Calendar-week totals · current week may be incomplete",12,muted,false,12);
         if(dashboardData.optString("start").compareTo("2026-03-30")<0&&dashboardData.optString("end").compareTo("2025-12-11")>=0)addText(panel,"Amber shading: injury / rebuild period",12,muted,false,4);
-        addInteractivePlot(panel,"Weekly training",points,"value",axis,Double.NaN,false,false,false);
+        addInteractivePlot(panel,"Weekly training",points,"value",axis,Double.NaN,false,false,ChartSeries.NONE,false);
     }
     private String weekDescription(JSONObject point){
         String day=point.optString("date");JSONObject week=null;JSONArray weeks=dashboardData.optJSONArray("weeks");
@@ -793,10 +825,10 @@ public final class MainActivity extends Activity {
         addText(panel,"Weekly averages · gaps mean missing measurements",12,muted,false,4);addRecoveryPlot(panel,weeks,metric,false);
     }
     private void addRecoveryPlot(LinearLayout panel,JSONArray weeks,String metric,boolean expanded){
-        if(expanded){addText(panel,dateSpan(dashboardData.optString("start"),dashboardData.optString("end")),14,ink,false,0);addText(panel,"Pinch to zoom dates · drag when zoomed · double-tap to reset",13,muted,false,8);}
+        if(expanded){addText(panel,dateSpan(dashboardData.optString("start"),dashboardData.optString("end")),14,ink,false,0);addText(panel,"Drag to read · two fingers to zoom / pan dates · double-tap to reset",13,muted,false,8);}
         RecoveryPlot plot=new RecoveryPlot(this,weeks,metric,point->{LinearLayout body=section();addText(body,recoveryDescription(point),16,ink,false,12).setTextIsSelectable(true);openPointSheet("Recovery details",body);});
-        plot.setExplorationEnabled(expanded);panel.addView(plot,new LinearLayout.LayoutParams(-1,chartHeight(metric.equals("all")?420:expanded?360:240)));
-        addText(panel,"Tap a measurement for its value and measured days",12,muted,false,6);
+        plot.setExplorationEnabled(expanded);panel.addView(plot,new LinearLayout.LayoutParams(-1,chartHeight(metric.equals("all")?420:expanded?360:240)+plot.readoutHeight()));
+        addText(panel,"Drag across a metric to read · tap for details and measured days",12,muted,false,6);
         MaterialUi.ButtonGroup actions=new MaterialUi.ButtonGroup(this,true);actions.setPadding(0,dp(12),0,0);panel.addView(actions,new LinearLayout.LayoutParams(-1,-2));
         if(!expanded){actions.addView(actionButton("Explore chart",false,()->{LinearLayout body=section();body.setPadding(dp(16),dp(12),dp(16),dp(16));addRecoveryPlot(body,weeks,metric,true);showExpanded("Weekly recovery",body);}));return;}
         actions.addView(actionButton("View data",false,()->{JSONArray rows=plot.dataPoints();if(rows.length()==0){new AlertDialog.Builder(this).setTitle("Recovery data").setMessage("No saved measurements in this date range.").setPositiveButton("Close",null).show();return;}String[] labels=new String[rows.length()];for(int i=0;i<labels.length;i++)labels[i]=recoveryDescription(rows.optJSONObject(i));chartData("Recovery",labels,w->plot.selectPoint(rows.optJSONObject(w)));}));
@@ -827,32 +859,80 @@ public final class MainActivity extends Activity {
         boolean vertical=row.getOrientation()==LinearLayout.VERTICAL;
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(vertical?-1:0,-2,vertical?0:1);if(row.getChildCount()>0&&!vertical)lp.leftMargin=dp(8);lp.bottomMargin=dp(12);row.addView(tile,lp);
     }
-    private void recentSessions(){
-        LinearLayout panel=card();addText(panel,"Recent sessions",20,ink,true,0);addText(panel,"Latest activities in the selected range",12,muted,false,4);
-        String[] keys={"all","easy","easy_long","short","medium","long","trial","warmup","rebuild_run","cross_train","cross_interval","strength","other_run","other"};
-        String[] labels=new String[keys.length];labels[0]="All types";for(int i=1;i<keys.length;i++)labels[i]=ScatterPlot.label(keys[i]);
-        String filter=setting("recent_filter","all");smallButton(panel,(filter.equals("all")?"All types":ScatterPlot.label(filter))+" ▾",()->chooseMode("Session type","recent_filter",labels,keys));
-        JSONArray rows=dashboardData.optJSONArray("runs");int shown=0;
-        if(rows!=null)for(int i=0;i<rows.length()&&shown<3;i++){
-            JSONObject run=rows.optJSONObject(i);if(!filter.equals("all")&&!filter.equals(run.optString("category")))continue;shown++;
-            LinearLayout item=new LinearLayout(this);item.setOrientation(LinearLayout.VERTICAL);item.setPadding(0,dp(14),0,dp(14));
-            addText(item,run.optString("date")+" · "+ScatterPlot.label(run.optString("category")),13,ink,true,0);
-            addText(item,run.optString("title"),15,ink,true,5);addText(item,sessionMetrics(run),12,muted,false,5);
-            item.setOnClickListener(v->{if(!busy)showRun(run);});panel.addView(item,new LinearLayout.LayoutParams(-1,-2));
-            View divider=new View(this);divider.setBackgroundColor(palette.outline);panel.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));
-        }
-        if(shown==0)addText(panel,"No sessions of this type.",14,muted,false,14);
-        button(panel,"All sessions →",false,()->{runFilter=filter;selectScreen(SESSIONS);});
+    private boolean intervalSession(JSONObject run){
+        String category=run.optString("category");return category.equals("short")||category.equals("medium")||category.equals("long");
+    }
+    private boolean sessionAdjusted(JSONObject run){return run.optBoolean("is_run",true)&&(adjusted("adjust_elevation")||adjusted("adjust_temperature"));}
+    private double sessionPace(JSONObject run,boolean work){
+        double raw=run.optDouble(work?"work_pace":"pace",Double.NaN);
+        return sessionAdjusted(run)?run.optDouble(work?"display_work_pace":"display_overall_pace",raw):raw;
+    }
+    private String sessionPaceLabel(JSONObject run,boolean work){return (sessionAdjusted(run)?"Adj ":"")+(work?"work pace":"pace");}
+    private String paceValue(double value){return Double.isFinite(value)&&value>0?ScatterPlot.pace(value,miles):"—";}
+    private String hrValue(double value){return Double.isFinite(value)&&value>0?Long.toString(Math.round(value)):"—";}
+    private boolean hasWorkMetrics(JSONObject run){return intervalSession(run)&&(Double.isFinite(run.optDouble("work_pace",Double.NaN))||Double.isFinite(run.optDouble("work_hr",Double.NaN)));}
+    private String sessionSummary(JSONObject run){
+        return distanceText(run)+" · "+sessionPaceLabel(run,false)+" "+paceValue(sessionPace(run,false))+(miles?" /mi":" /km")
+            +(run.isNull("duration")?"":" · "+raceTime(run.optDouble("duration")))+" · "+hrValue(run.optDouble("average_hr",Double.NaN))+" bpm average";
+    }
+    private String sessionConditions(JSONObject run){
+        java.util.ArrayList<String> details=new java.util.ArrayList<>();
+        double gain=run.optDouble("elevation_gain",Double.NaN),loss=run.optDouble("elevation_loss",Double.NaN);
+        if(Double.isFinite(gain)&&Double.isFinite(loss))details.add("+"+Math.round(Math.abs(gain)*3.28084)+" / −"+Math.round(Math.abs(loss)*3.28084)+" ft");
+        else if(Double.isFinite(gain))details.add("+"+Math.round(Math.abs(gain)*3.28084)+" ft");
+        else if(Double.isFinite(loss))details.add("−"+Math.round(Math.abs(loss)*3.28084)+" ft");
+        double below=run.optDouble("hr_under_percent",Double.NaN);if(Double.isFinite(below))details.add("Easy HR "+Math.round(below)+"%");
+        JSONObject weather=run.optJSONObject("weather");double temperature=weather==null?Double.NaN:weather.optDouble("temperatureF",Double.NaN);
+        if(Double.isFinite(temperature))details.add(Math.round(temperature)+" °F");
+        return String.join(" · ",details);
     }
     private String sessionMetrics(JSONObject run){
-        String info=displayPace(run)+" · "+distanceText(run);
-        double hr=run.optDouble("work_hr",run.optDouble("average_hr",Double.NaN));if(Double.isFinite(hr))info+=" · "+Math.round(hr)+" bpm";
-        if(!run.isNull("hr_under_percent"))info+="\nEasy HR "+Math.round(run.optDouble("hr_under_percent"))+"% below ceiling";
-        if(!run.isNull("elevation_gain"))info+=" · +"+Math.round(run.optDouble("elevation_gain")*3.28084)+" ft";
-        JSONObject weather=run.optJSONObject("weather");if(weather!=null&&!weather.isNull("temperatureF"))info+=" · "+Math.round(weather.optDouble("temperatureF"))+" °F";
-        return info;
+        String result=sessionSummary(run);
+        if(hasWorkMetrics(run))result+="\n"+sessionPaceLabel(run,true)+" "+paceValue(sessionPace(run,true))+(miles?" /mi":" /km")+" · "+hrValue(run.optDouble("work_hr",Double.NaN))+" bpm work average";
+        String conditions=sessionConditions(run);if(!conditions.isEmpty())result+="\n"+conditions;
+        JSONObject effort=run.optJSONObject("best_5k");if(effort!=null)result+="\nMeasured 5K "+raceTime(effort.optDouble("duration"));
+        return result;
     }
-    private String displayPace(JSONObject run){return run.isNull("display_pace")?paceText(run):ScatterPlot.pace(run.optDouble("display_pace"),miles)+(miles?" /mi":" /km");}
+    private void sessionMetric(MaterialUi.MetricGroup parent,String label,String value,boolean secondary){
+        LinearLayout column=section();column.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        TextView caption=text(label,11,muted,false);caption.setLineSpacing(0,1);caption.setIncludeFontPadding(false);column.addView(caption,new LinearLayout.LayoutParams(-1,-2));
+        TextView number=text(value,secondary?16:18,secondary?palette.primary:ink,true);number.setLineSpacing(0,1);number.setIncludeFontPadding(false);
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(2);column.addView(number,lp);parent.addView(column);
+    }
+    private void sessionWorkMetric(MaterialUi.MetricGroup parent,String value,boolean label){
+        TextView view=text(value,16,label?muted:palette.primary,!label);view.setLineSpacing(0,1);view.setIncludeFontPadding(false);
+        view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);parent.addView(view);
+    }
+    private void sessionCard(LinearLayout parent,JSONObject run){
+        LinearLayout row=section();row.setPadding(dp(12),dp(10),dp(12),dp(10));row.setBackground(MaterialUi.ripple(this,palette.container,16,palette.primary));row.setMinimumHeight(dp(48));row.setFocusable(true);
+        String category=run.optString("category"),unit=miles?" /mi":" /km";
+        JSONObject effort=run.optJSONObject("best_5k");
+        TextView type=addText(row,ScatterPlot.label(category)+" · "+sessionCardDate(run.optString("date"))+(effort==null?"":" · 5K "+raceTime(effort.optDouble("duration"))),11,muted,true,0);
+        type.setMaxLines(2);type.setEllipsize(TextUtils.TruncateAt.END);
+        GradientDrawable marker=shape(palette.chart(ScatterPlot.color(category)),4);marker.setBounds(0,0,dp(8),dp(8));type.setCompoundDrawables(marker,null,null,null);type.setCompoundDrawablePadding(dp(5));
+        MaterialUi.MetricGroup metrics=new MaterialUi.MetricGroup(this);metrics.setPadding(0,dp(5),0,0);
+        double distance=run.optDouble("distance",Double.NaN),duration=run.optDouble("duration",Double.NaN);
+        sessionMetric(metrics,miles?"Distance mi":"Distance km",Double.isFinite(distance)?String.format(Locale.getDefault(),"%.2f",distance/(miles?1609.344:1000)):"—",false);
+        sessionMetric(metrics,sessionAdjusted(run)?"Adj pace"+unit:"Pace"+unit,paceValue(sessionPace(run,false)),false);
+        sessionMetric(metrics,"Time",Double.isFinite(duration)?raceTime(duration):"—",false);
+        sessionMetric(metrics,"Avg HR",hrValue(run.optDouble("average_hr",Double.NaN)),false);
+        if(hasWorkMetrics(run)){
+            // Keep work pace and HR in the same column slots as their overall values.
+            sessionWorkMetric(metrics,sessionAdjusted(run)?"Adj work":"Work",true);
+            sessionWorkMetric(metrics,paceValue(sessionPace(run,true)),false);
+            metrics.addView(new View(this));
+            sessionWorkMetric(metrics,hrValue(run.optDouble("work_hr",Double.NaN)),false);
+        }
+        row.addView(metrics,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout footer=new LinearLayout(this);footer.setGravity(Gravity.CENTER_VERTICAL);
+        String conditions=sessionConditions(run);if(!conditions.isEmpty())footer.addView(text(conditions+" · ",12,muted,false),new LinearLayout.LayoutParams(-2,-2));
+        TextView name=text(run.optString("title"),12,muted,false);name.setMaxLines(1);name.setEllipsize(TextUtils.TruncateAt.END);
+        footer.addView(name,new LinearLayout.LayoutParams(0,-2,1));
+        LinearLayout.LayoutParams footerLp=new LinearLayout.LayoutParams(-1,-2);footerLp.topMargin=dp(4);row.addView(footer,footerLp);
+        if(needsReview(run))addText(row,"Needs review",11,palette.error,false,2);
+        row.setContentDescription(run.optString("title")+", "+run.optString("date")+", "+ScatterPlot.label(category)+", "+sessionMetrics(run)+(needsReview(run)?". Needs review":"")+". Open session details.");
+        row.setOnClickListener(v->{if(!busy)showRun(run);});LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(6);parent.addView(row,lp);
+    }
     private String targetConditionsLabel(){
         String temperature=setting("target_temperature","45"),humidity=setting("target_humidity","");
         String gain=setting("target_gain","0"),loss=setting("target_loss","0");
@@ -945,19 +1025,18 @@ public final class MainActivity extends Activity {
         return count;
     }
     private void renderSessions() {
-        addText(content,"Find a session",26,ink,false,0);
         EditText search=new EditText(this);search.setSingleLine(true);search.setTextSize(15);search.setTextColor(ink);
         search.setHint("Search session titles");search.setHintTextColor(muted);search.setPadding(dp(14),0,dp(14),0);search.setBackground(shape(palette.high,28));
-        search.setMinimumHeight(dp(56));search.setInputType(InputType.TYPE_CLASS_TEXT);search.setText(query);LinearLayout.LayoutParams searchLp=new LinearLayout.LayoutParams(-1,-2);searchLp.topMargin=dp(16);content.addView(search,searchLp);
+        search.setMinimumHeight(dp(48));search.setInputType(InputType.TYPE_CLASS_TEXT);search.setText(query);LinearLayout.LayoutParams searchLp=new LinearLayout.LayoutParams(-1,-2);content.addView(search,searchLp);
         HorizontalScrollView filters=new HorizontalScrollView(this);filters.setHorizontalScrollBarEnabled(false);
-        LinearLayout chips=new LinearLayout(this);String[] keys={"all","attention","easy","easy_long","short","medium","long","trial","cross_train","cross_interval","strength","warmup","rebuild_run","other_run","other"};
-        String[] labels={"All","Needs review","Easy","Easy Long","Short","Medium","Long","5K","Cross-training","Cross intervals","Strength","Warmup","Rebuild","Other run","Other"};int selected=0;
+        LinearLayout chips=new LinearLayout(this);String[] keys={"all","short","medium","long","easy","easy_long","trial","cross_train","cross_interval","strength","warmup","rebuild_run","other_run","other","attention"};
+        String[] labels={"All","Short","Medium","Long","Easy","Easy Long","5K","Cross-training","Cross intervals","Strength","Warmup","Rebuild","Other run","Other","Needs review"};int selected=0;
         for(int i=0;i<keys.length;i++){
             final String key=keys[i];if(key.equals(runFilter))selected=i;
             Button chip=chipButton(labels[i],key.equals(runFilter),()->{runFilter=key;visibleRuns=30;renderRuns(null);});chip.setTextSize(12);
             LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);lp.rightMargin=dp(6);chips.addView(chip,lp);
         }
-        filters.addView(chips);LinearLayout.LayoutParams fl=new LinearLayout.LayoutParams(-1,-2);fl.topMargin=dp(10);content.addView(filters,fl);
+        filters.addView(chips);LinearLayout.LayoutParams fl=new LinearLayout.LayoutParams(-1,-2);fl.topMargin=dp(6);content.addView(filters,fl);
         final int selectedFilter=selected;filters.post(()->filters.smoothScrollTo(chips.getChildAt(selectedFilter).getLeft(),0));
         runList=new LinearLayout(this);runList.setOrientation(LinearLayout.VERTICAL);content.addView(runList);renderRunList();
         search.addTextChangedListener(new TextWatcher(){
@@ -967,26 +1046,22 @@ public final class MainActivity extends Activity {
         });
     }
     private void renderRunList(){
-        runList.removeAllViews();JSONArray runs=dashboardData.optJSONArray("runs");int matching=0;String lastDate="";
+        runList.removeAllViews();JSONArray runs=dashboardData.optJSONArray("runs");int matching=0;
         if(runs!=null)for(int i=0;i<runs.length();i++){
             JSONObject run=runs.optJSONObject(i);if(run==null)continue;
             if(!run.optString("title").toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT)))continue;
             if("attention".equals(runFilter)?!needsReview(run):!"all".equals(runFilter)&&!runFilter.equals(run.optString("category")))continue;
             matching++;if(matching>visibleRuns)continue;
-            String day=run.optString("date");
-            if(!day.equals(lastDate)){addText(runList,friendlyDate(day),14,muted,true,24);lastDate=day;}
-            LinearLayout row=section();row.setPadding(dp(16),dp(16),dp(16),dp(16));row.setBackground(MaterialUi.ripple(this,palette.container,20,palette.primary));row.setMinimumHeight(dp(112));row.setFocusable(true);
-            String category=run.optString("category");
-            TextView type=addText(row,ScatterPlot.label(category),12,muted,true,0);GradientDrawable marker=shape(palette.chart(ScatterPlot.color(category)),6);marker.setBounds(0,0,dp(10),dp(10));type.setCompoundDrawables(marker,null,null,null);type.setCompoundDrawablePadding(dp(6));
-            TextView title=addText(row,run.optString("title"),18,ink,true,6);title.setMaxLines(2);title.setEllipsize(TextUtils.TruncateAt.END);
-            addText(row,displayPace(run)+" · "+distanceText(run)+(run.isNull("duration")?"":" · "+raceTime(run.optDouble("duration"))),14,ink,false,10);
-            if(!run.isNull("average_hr"))addText(row,Math.round(run.optDouble("average_hr"))+" bpm average"+(run.has("best_5k")?" · 5K "+raceTime(run.optJSONObject("best_5k").optDouble("duration")):""),12,muted,false,6);
-            if(needsReview(run))addText(row,"Needs review · open session actions",12,palette.error,false,8);
-            row.setContentDescription(run.optString("title")+", "+day+", "+ScatterPlot.label(category)+", "+sessionMetrics(run)+". Open session details.");
-            row.setOnClickListener(v->{if(!busy)showRun(run);});LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(8);runList.addView(row,lp);
+            sessionCard(runList,run);
         }
         if(matching==0)addText(runList,"No sessions match. Try another filter or date range.",15,muted,false,24);
         else{addText(runList,matching+" matching sessions",12,muted,false,16);if(matching>visibleRuns){Button more=actionButton("Show more sessions",false,()->{visibleRuns+=30;renderRunList();});LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(12);runList.addView(more,lp);}}
+    }
+    private String sessionCardDate(String day){
+        try{
+            LocalDate date=LocalDate.parse(day);
+            return date.format(DateTimeFormatter.ofPattern(date.getYear()==LocalDate.now().getYear()?"MMM d":"MMM d, yyyy",Locale.getDefault()));
+        }catch(Exception error){return day;}
     }
     private String friendlyDate(String day){
         try{LocalDate date=LocalDate.parse(day);if(date.equals(LocalDate.now()))return "Today";if(date.equals(LocalDate.now().minusDays(1)))return "Yesterday";return date.format(DateTimeFormatter.ofPattern("EEE, MMM d, yyyy",Locale.getDefault()));}catch(Exception error){return day;}
@@ -1029,8 +1104,10 @@ public final class MainActivity extends Activity {
         if(weather!=null&&!weather.isNull("humidity"))detail+="\nHumidity: "+Math.round(weather.optDouble("humidity"))+"%";
         if(weather!=null&&!weather.isNull("observation_time"))detail+="\nStation observation: "+weather.optString("observation_time")+" ("+Math.round(weather.optDouble("observation_offset"))+" min from midpoint)";
         if(!run.isNull("work_hr"))detail+="\nWork interval HR: "+Math.round(run.optDouble("work_hr"))+" bpm";
+        if(!run.isNull("work_pace"))detail+="\nRecorded work pace: "+ScatterPlot.pace(run.optDouble("work_pace"),miles)+(miles?" /mi":" /km");
         if(run.has("work_source"))detail+="\nWork metrics: "+run.optString("work_source");
         if(!run.isNull("elevation_gain"))detail+="\nElevation gain: "+Math.round(run.optDouble("elevation_gain")*3.28084)+" ft ("+run.optString("elevation_source","Garmin")+")";
+        if(!run.isNull("elevation_loss"))detail+="\nElevation loss: "+Math.round(Math.abs(run.optDouble("elevation_loss"))*3.28084)+" ft ("+run.optString("elevation_source","Garmin")+")";
         if(run.has("trial_error"))detail+="\n\n"+run.optString("trial_error");
         String category=run.optString("category");
         if(expandedChart!=null)expandedChart.dismiss();
@@ -1044,7 +1121,11 @@ public final class MainActivity extends Activity {
         addText(hero,run.isNull("pace")?"—":ScatterPlot.pace(run.optDouble("pace"),miles),42,palette.onPrimaryContainer,false,8);
         addText(hero,miles?"minutes per mile":"minutes per kilometre",13,palette.onPrimaryContainer,false,4);
         addText(body,distanceText(run)+(run.isNull("duration")?"":" · "+raceTime(run.optDouble("duration"))+" duration"),20,ink,true,24);
-        if(!run.isNull("display_pace"))addText(body,"Displayed pace · "+displayPace(run)+"\n"+adjustmentLabel()+" where available",14,muted,false,12);
+        if(sessionAdjusted(run))addText(body,"Adjusted overall pace · "+paceValue(sessionPace(run,false))+(miles?" /mi":" /km")+"\n"+adjustmentLabel()+" where available",14,muted,false,12);
+        if(intervalSession(run)&&Double.isFinite(run.optDouble("work_pace",Double.NaN))){
+            addText(body,"Recorded work pace · "+paceValue(run.optDouble("work_pace"))+(miles?" /mi":" /km"),16,ink,false,12);
+            if(sessionAdjusted(run))addText(body,"Adjusted work pace · "+paceValue(sessionPace(run,true))+(miles?" /mi":" /km"),14,muted,false,6);
+        }
         if(!run.isNull("average_hr"))addText(body,"Average heart rate · "+Math.round(run.optDouble("average_hr"))+" bpm",16,ink,false,20);
         if(!run.isNull("hr_under_percent"))addText(body,Math.round(run.optDouble("hr_under_percent"))+"% of time below your HR ceiling · "+(run.optString("hr_source").contains("average")?"estimated from average HR":"recorded samples"),14,muted,false,8);
         if(effort!=null)addText(body,"Fastest continuous 5K · "+raceTime(effort.optDouble("duration")),18,ink,true,20);

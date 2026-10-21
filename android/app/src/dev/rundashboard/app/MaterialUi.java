@@ -36,12 +36,13 @@ final class MaterialUi {
         return new RippleDrawable(ColorStateList.valueOf((rippleColor&0x00ffffff)|0x24000000),shape(context,color,radius),shape(context,0xffffffff,radius));
     }
     /** Wraps chips or stacks equal-width actions whenever their actual labels need more room. */
-    static final class ButtonGroup extends ViewGroup {
+    static class ButtonGroup extends ViewGroup {
         private final boolean equal;
         private final int gap;
         private final ArrayList<View> visible=new ArrayList<>();
         private ButtonLayout.Plan plan;
         ButtonGroup(Context context,boolean equal){super(context);this.equal=equal;gap=dp(context,8);}
+        protected int[] childWidths(int available,int[] preferred,int gap){return ButtonLayout.widths(available,preferred,gap,equal);}
         @Override protected ViewGroup.LayoutParams generateDefaultLayoutParams(){return new ViewGroup.LayoutParams(-2,-2);}
         @Override protected void onMeasure(int widthSpec,int heightSpec){
             visible.clear();int natural=0;
@@ -56,7 +57,7 @@ final class MaterialUi {
             int available=Math.max(0,width-padding);
             int[] preferred=new int[visible.size()],heights=new int[visible.size()];
             for(int i=0;i<preferred.length;i++)preferred[i]=visible.get(i).getMeasuredWidth();
-            int[] widths=ButtonLayout.widths(available,preferred,gap,equal);
+            int[] widths=childWidths(available,preferred,gap);
             for(int i=0;i<widths.length;i++){
                 View child=visible.get(i);child.measure(MeasureSpec.makeMeasureSpec(widths[i],MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(0,MeasureSpec.UNSPECIFIED));heights[i]=child.getMeasuredHeight();
             }
@@ -71,6 +72,10 @@ final class MaterialUi {
                 int y=getPaddingTop()+plan.top[i];child.layout(x,y,x+child.getMeasuredWidth(),y+child.getMeasuredHeight());
             }
         }
+    }
+    static final class MetricGroup extends ButtonGroup {
+        MetricGroup(Context context){super(context,true);}
+        @Override protected int[] childWidths(int available,int[] preferred,int gap){return ButtonLayout.metricWidths(available,preferred,gap);}
     }
     static final class NavigationItem extends LinearLayout {
         private final ImageView icon;

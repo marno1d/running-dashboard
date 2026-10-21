@@ -394,6 +394,8 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
     all_rows = sorted(result['runs'],key=lambda r:r['started'])
     fit_intervals = fit_intervals or {}
     web_mode=settings.get('classification_mode')=='web'
+    # Rebuild one work average per session, independent of legacy plot preferences.
+    result['interval_points'] = []
     for row in all_rows:
         activity = original.get(row['id'],{})
         row['training_load'] = number(activity.get('activityTrainingLoad'))
@@ -408,6 +410,7 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
             fit = fit_intervals.get(row['id']) or {}
             summary = dashboard.interval_pace_from_split_summaries(activity) or fit
             if avg:
+                row['work_reps'] = len(points)
                 row['work_pace'],row['work_distance'],row['work_duration'] = avg[0]['pace'],avg[0]['distance'],avg[0]['duration']
                 weighted = [(p.get('average_hr'),p.get('duration')) for p in points if p.get('average_hr') and p.get('duration')]
                 row['work_hr'] = sum(h*d for h,d in weighted)/sum(d for _,d in weighted) if weighted else None
@@ -422,8 +425,7 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
             if selection is None and (fit or web_mode):
                 row['work_hr'] = fit.get('avgHr')
                 row['work_gain'],row['work_loss'] = fit.get('ascentMeters'),fit.get('descentMeters')
-            if row.get('work_pace') and (settings.get('interval_mode')=='session' or not points):
-                result['interval_points'] = [p for p in result['interval_points'] if p['id']!=row['id']]
+            if row.get('work_pace'):
                 result['interval_points'].append(dict(row,pace=row['work_pace'],duration=row['work_duration'],distance=row['work_distance'],lap=0,reps=row.get('work_reps',0)))
         terrain = row.get('terrain')
         if terrain:
@@ -434,7 +436,7 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
                 if terrain.get('work_loss') is not None:row['work_loss']=terrain['work_loss']
         if web_mode:
             web_precision(row)
-            if row['category'] in INTERVALS and settings.get('interval_mode')=='session':
+            if row['category'] in INTERVALS:
                 for point in result['interval_points']:
                     if point['id']==row['id']:
                         point['pace']=row.get('work_pace')
@@ -494,6 +496,9 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
                             interval_count=len([r for r in rows if r['category'] in INTERVALS]),
                             cross_hours=sum((r.get('duration') or 0)/3600 for r in rows if r['category'] in ('cross_train','cross_interval')))
     for row in rows:
+        # Cards compare the whole activity independently of work reps or a 5K segment.
+        row['display_overall_pace'] = adjusted_pace(row,row.get('pace'),settings) if row.get('is_run',True) else row.get('pace')
+        row['display_work_pace'] = adjusted_pace(row,row.get('work_pace'),settings,True) if row['category'] in INTERVALS else None
         raw = row.get('work_pace') if row['category'] in INTERVALS else row['best_5k']['duration']/5 if row.get('best_5k') else row.get('pace')
         row['display_pace'] = adjusted_pace(row,raw,settings,row['category'] in INTERVALS) if row['category'] in EASY+INTERVALS+('trial',) else raw
     result['history_start'],result['history_end'] = context_start,context_end

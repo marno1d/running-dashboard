@@ -5,7 +5,7 @@ Chaquopy 17. Garmin sign-in and downloads run inside the APK on a background
 thread. Termux is used to build and install updates.
 
 The Android source originally developed in `run_dashboard` now lives here in the
-`running-dashboard` repository. Version **0.14.0** brings the web dashboard's
+`running-dashboard` repository. Version **0.16.3** brings the web dashboard's
 data sources, calibration history, and presentation into the native Trends, Sessions, Targets, and Profile screens.
 
 ## Material 3 interface
@@ -17,6 +17,13 @@ and Pause appear above navigation. Routine status messages disappear after a
 short delay, while errors stay visible. Logs remain available in sync controls
 and Profile.
 
+Pull down and release at the top of Trends, Sessions, or Targets to sync.
+A circular indicator follows the pull and gives a small haptic cue when ready;
+releasing early cancels. It uses the same foreground sync and saved-data cache
+as **Sync now**, and stays disabled while another operation is running or before
+sign-in. Upward scrolling, horizontal chart gestures, and multi-touch do not
+trigger it. Profile keeps its explicit sync controls to protect settings edits.
+
 Profile offers **System**, **Light**, and **Dark** appearance. Chart axes,
 inspectors, sheets, controls, and selection rings use the same theme. Text color
 pairs and translucent chart markers are checked for contrast. Controls keep
@@ -27,23 +34,66 @@ The adaptive launcher icon includes a monochrome layer for themed Android icons;
 its route mark stays within the safe area for circular and shaped masks.
 
 Trends leads with the latest measured 5K, volume and easy-effort summaries.
-The **5K / Pace / Load / Recovery** chips select a focused chart group, followed
-by a three-session preview. Chart settings live in the card's overflow button;
-legends use the same colors and shapes as the plotted measurements. Readable
+The **5K / Pace / Load / Recovery** chips select a focused chart group.
+Activity browsing lives in the Sessions tab. Chart settings live in the card's overflow button;
+legends use the same colors and shapes as the plotted measurements. Tap a legend
+item to hide or restore its series. Hidden labels stay visible, muted and struck
+through, with dimmed symbols and checkable accessibility states. The 5K, interval
+pace, road/trail easy pace, and easy-effort HR buckets all support this in cards
+and expanded charts. Choices are saved per chart and synchronized between both
+views, including the existing 5K series switches. Toggling uses saved plot data,
+keeps the axes and zoom stable, and requires no recalculation or download. Hidden
+series also leave hit testing, the data list, and related easy-pace shading;
+restoring a legend item brings them back. All series can be hidden without
+removing their legend controls. Drag horizontally across a chart to scrub the
+first enabled series in legend order. The guide follows fractional dates smoothly;
+the highlight and date/series/value bubble snap to actual measurements
+and remain after release. The bubble follows the cursor horizontally but stays
+at a fixed vertical position in a reserved header above the axes. Header space
+scales with system text size and is added to the chart height, keeping the plotted
+area the same size and preventing a layout jump when scrubbing begins. This
+applies to cards, expanded charts, load, and Recovery. Hiding the active series reselects the next enabled
+legend entry at the cursor date. An enabled series with no measurements in view
+shows an empty readout rather than borrowing another series' values. Measurements
+outside the zoomed window or fixed pace scale are excluded.
+Weekly load scrubs its bars; Recovery scrubs the metric lane where the drag starts,
+preserving missing-week gaps and reporting the actual measured week and day count.
+Readable
 pace/numeric ticks, lighter grid lines, and wider plotting areas reduce clutter.
-Interval measurements are individual points; calibrated estimates retain their
+Interval pace always shows one session average per workout, calculated from
+total work time divided by total work distance. The individual-repetition view
+and its Trends/Profile controls are removed; older rep preferences also use
+session averages. Expanded charts, scrubbing, data lists, adjustments, predictions
+and session cards all use the session's work metrics. Work-lap corrections still
+choose which laps contribute to that average. Calibrated estimates retain their
 dashed lines. Dense estimates use fewer visible symbols while keeping every
-measurement available to selection and the data list. Date and trend
-adjustment chips stay with Trends; Sessions has its own date chip. Targets uses
+measurement available to selection and the data list. Condition adjustments
+share one setting across Trends and Sessions, with date and adjustment controls
+available above both screens. Targets uses
 an inline Estimate / Latest trial / Custom selector, an inline custom-time field,
 large pace cards, and a running-conditions bottom sheet. Equivalent race times
 and calculation details expand on request. Target conditions are independent of
 trend adjustments.
 
-Sessions groups activities by date. Opening one presents a full-screen detail
+Sessions has one newest-first list with dates beside the category on each card,
+search, category filters, and pagination. Dates show the month and day, adding
+the year for older years; separate date headings are removed. After **All**,
+filters start **Short, Medium, Long, Easy, Easy Long**, then the remaining types,
+with **Needs review** last. Compact cards lead with distance, whole-session pace,
+duration, and average HR. Running intervals add a smaller Work row whose pace
+and HR share the primary Pace and Avg HR column positions. Both rows use one
+measured grid, including when larger text needs two columns. Elevation gain and
+loss, saved HR-compliance summaries, and temperature share a compact footer
+with the session name directly after temperature. The name uses the remaining
+space and ellipsizes; conditions can wrap for larger system text. Measured 5K
+times sit in the same header. Padding is compact, and the search
+area has no duplicate heading. Metric columns use measured text widths to fall
+back from four columns to two or one with narrow screens and larger system text.
+The former Trends recent-sessions preview is merged into this list.
+Opening one presents a full-screen detail
 page; its action menu contains category and work-lap corrections. Charts also
-open full-screen, while the accessible data lists and original measurements
-remain available.
+open full-screen, with accessible data lists for the currently visible series
+and original measurements available through point/session details.
 
 ## Dashboard
 
@@ -80,16 +130,19 @@ remain available.
   use that metric's units and precision, including resting HR and HRV.
 - Sessions: search, category filters, pagination, run details, and category and
   work-lap corrections. Cross-training and strength sessions appear here too.
-  Trends also includes the web's recent-sessions preview with category filtering,
-  pace, distance, active HR, HR compliance, elevation, and temperature.
+  Recent-session metrics are shown in these same rows, with one search/filter
+  state and no separate preview on Trends.
 
 The date selector includes All (since June 2025), 7/30/45/90/180 days, one year,
 18/24 calendar months, and custom dates. Pace defaults to min/mile; min/km is
 available in Profile. The first launch of 0.11 changes an All-range selection to
 90 days; an existing specific/custom selection is preserved. Full-history
-calibration and saved data stay enabled. Expanded charts support pinch zoom and
-horizontal date panning; vertical swipes scroll the page even after zooming.
-Dashboard previews allow taps and scrolling without intercepting pinch gestures.
+calibration and saved data stay enabled. Charts use one-finger horizontal drags
+for scrubbing; vertical swipes scroll the page until a scrub begins. Expanded
+charts use two fingers to zoom and pan (date and value axes for pace/load/effort,
+dates only for Recovery). Lifting one finger after a pinch never starts a scrub
+or opens details. Double-tap resets the expanded viewport. Dashboard previews
+allow scrubbing, taps and page scrolling without intercepting pinch gestures.
 
 Every chart has one **Explore chart** action. Its full-screen view includes
 **View data**, with multiline rows that keep values and source descriptions
@@ -103,8 +156,19 @@ zoomed; **Use visible dates across app** changes the dashboard's shared range.
 Chart labels follow the system font scale, and text/marker shapes accompany colour.
 The data lists provide a screen-reader-friendly alternative to canvas gestures.
 
-Trends has one **Adjustments** chip with its active count. Interval targets
-show three prominent pace cards; the 5K basis is inline and conditions open in a sheet.
+Trends and Sessions share an **Adjustments** split control. Tap its label once
+to turn both elevation and weather on or off immediately. It shows **On**, **Off**, or **1**
+when only one is active; tapping a partial selection enables both. The adjacent
+**More** button opens the individual elevation/weather switches and Apply action.
+Both settings are saved together and redraw cached charts and cards without a
+download. Sessions labels its pace columns **Adj pace** and **Adj work pace**
+when conditions are enabled. Overall pace uses the whole activity's distance
+and elevation; interval work pace uses the work distance and work elevation
+(with the established activity-elevation fallback). Missing conditions stay
+unadjusted, and HR-normalized trend modes do not replace these card paces.
+Distance, time, HR, elevation, and weather values stay recorded. Recorded overall
+and work paces remain available in session details.
+Interval targets show three prominent pace cards; the 5K basis is inline and conditions open in a sheet.
 Equivalent race times and calculation explanations expand on request. Session
 source/recording details are collapsed by default.
 
@@ -246,6 +310,7 @@ Open the completed download and accept Android's installation prompt.
 .venv/bin/python -m unittest discover -s tests -v
 python scripts/check_chart.py
 python scripts/check_sync.py
+python scripts/check_refresh.py
 python scripts/check_material.py
 python scripts/check_runtime.py
 ```
@@ -258,6 +323,41 @@ real-device interaction need an on-device check after installation. Check all
 four tabs in both themes and with larger system text, plus all four Trends
 groups and the home-screen icon (including themed icons), including custom target
 validation, scrolling conditions, session corrections, and expanded chart data.
+For each chart legend, hide and restore every entry, then hide all entries and
+restore one. Expand a chart, zoom, and toggle a series: the view should stay put,
+hidden points should leave View data and point selection, and the card legend
+should agree after closing. Check 5K visibility in its settings sheet as well,
+and verify choices survive switching date ranges, tabs, and reopening the app.
+Scrub each chart horizontally: the guide should move smoothly while the bubble
+shows a real point's date and value from the first enabled legend item. Lift to
+keep the readout; toggle the active series to retarget it without changing zoom.
+Verify an enabled but empty series shows no visible measurements, fixed-scale
+outliers cannot be selected, and interval pace shows one average per workout.
+Check each Recovery lane and weekly load, plus two-finger zoom/pan in Explore.
+After lifting one finger from a pinch, the remaining finger must not scrub or
+open a point sheet. Vertical swipes must scroll the page; taps and View data must
+still open details. Check bubble placement at both edges with enlarged text:
+it must stay in the reserved header when the finger moves up and down, never
+cover axes or data, and never resize the plot when it appears or disappears.
+In Sessions, verify there is one list with newest-first dates beside each card's
+category, search, every category filter, Show more, and all available
+HR/elevation/weather/5K metrics. Check that the first category filters follow
+Short/Medium/Long/Easy/Easy Long, with Needs review last, and that older-year
+card dates include the year.
+Check that overall pace uses the entire session rather than work reps or a 5K
+segment. Toggle conditions in either Sessions or Trends and switch tabs: both
+controls should agree, only pace columns should change, and both elevation
+gain and loss should remain visible. Check a long activity duration and larger
+system text to confirm the metric grid wraps while the Work pace/HR columns
+stay aligned. Confirm the name follows temperature in the footer without a
+separate name row. Opening a row should retain its
+detail page, recorded overall/work paces, and correction actions. Trends
+should contain charts and summaries without an activity preview.
+For pull-to-refresh, release a short pull, then a full pull from the top of
+Trends, Sessions, and Targets. Only the full pull should start one sync. Pull
+from the middle of a page, use chart gestures, and pull while sync is active;
+these should not start another job. Check completion, error, and pause states,
+then switch tabs or reopen during the sync.
 For sync,
 start a download, switch apps or lock the phone, and reopen via its notification;
 progress should continue with one job. Pause from the notification and reopen to
@@ -323,7 +423,7 @@ The comparison uses the actual web Python builder and JavaScript against the
 same saved inputs and explicit date bounds. It checks the active configuration
 plus eight combinations of observed/intensity pace and elevation/temperature
 adjustments. It lists numeric deltas and separates small rounding effects from
-larger differences. Manual category/lap overrides and native per-rep plots may
+larger differences. Manual category/lap overrides may
 intentionally differ from the web app. Missing metric families are not validated
 by an empty chart, and the report includes data-coverage counts.
 

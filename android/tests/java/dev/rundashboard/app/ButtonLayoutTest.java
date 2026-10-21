@@ -25,6 +25,34 @@ public final class ButtonLayoutTest {
             desired=new int[]{96*scale,184*scale,120*scale};heights=new int[]{48*scale,64*scale,48*scale};
             for(boolean equal:new boolean[]{false,true}){widths=ButtonLayout.widths(available,desired,8,equal);plan=ButtonLayout.place(available,widths,heights,8);inside(available,widths,heights,plan);}
         }
-        System.out.println("Button wrapping, equal-width fallback, narrow screens and enlarged labels: OK");
+        desired=new int[]{50,67,64,40};heights=new int[]{36,36,36,36};
+        widths=ButtonLayout.metricWidths(296,desired,8);plan=ButtonLayout.place(296,widths,heights,8);
+        check(plan.height==36,"normal session metrics fit on one compact row");inside(296,widths,heights,plan);
+        desired=new int[]{100,134,128,80};
+        widths=ButtonLayout.metricWidths(296,desired,8);plan=ButtonLayout.place(296,widths,heights,8);
+        check(plan.top[1]==0&&plan.top[2]==44,"enlarged metrics use two columns instead of truncating");inside(296,widths,heights,plan);
+        desired=new int[]{150,201,192,120};
+        widths=ButtonLayout.metricWidths(296,desired,8);plan=ButtonLayout.place(296,widths,heights,8);
+        check(plan.top[3]==132,"very large metric labels stack");inside(296,widths,heights,plan);
+        for(int available:new int[]{0,160,224,280,360,600})for(int scale:new int[]{1,2,3}){
+            desired=new int[]{50*scale,67*scale,64*scale,40*scale};heights=new int[]{36*scale,36*scale,36*scale,36*scale};
+            widths=ButtonLayout.metricWidths(available,desired,8);plan=ButtonLayout.place(available,widths,heights,8);inside(available,widths,heights,plan);
+        }
+        // Both session rows share one grid: work pace/HR occupy slots 5 and 7.
+        for(int available:new int[]{160,224,296,360,600})for(int scale:new int[]{1,2,3}){
+            desired=new int[]{50*scale,67*scale,64*scale,40*scale,58*scale,40*scale,0,32*scale};
+            heights=new int[]{36*scale,36*scale,36*scale,36*scale,19*scale,19*scale,0,19*scale};
+            widths=ButtonLayout.metricWidths(available,desired,8);plan=ButtonLayout.place(available,widths,heights,8);
+            inside(available,widths,heights,plan);
+            check(plan.left[1]==plan.left[5],"overall and interval pace columns must align");
+            check(plan.left[3]==plan.left[7],"overall and interval HR columns must align");
+            check(plan.top[5]>plan.top[1]&&plan.top[7]>plan.top[3],"work values follow overall values");
+            if(available>=296&&scale==1){
+                check(plan.top[0]==plan.top[3]&&plan.top[4]==plan.top[7],"two session rows stay compact on a normal screen");
+                check(plan.top[4]>plan.top[0],"wide screens must not collapse both rows into eight columns");
+            }
+        }
+        check(ButtonLayout.metricWidths(280,new int[0],8).length==0,"empty metric row");
+        System.out.println("Button wrapping and compact aligned overall/work metrics on narrow screens and enlarged labels: OK");
     }
 }

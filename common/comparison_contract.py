@@ -11,7 +11,7 @@ LAP = fields('distance duration averageSpeed intensityType averageHR elevationGa
 FIT_INTERVAL = fields('distanceMeters durationSec count avgHr ascentMeters descentMeters source')
 TERRAIN = fields('status reason source elevation_gain elevation_loss work_gain work_loss samples')
 WEATHER = fields('temperatureF dewPointF humidity source station observation_time observation_offset')
-ROW = fields('id date started category pace distance duration timer_duration activity_type is_run average_hr max_hr hr_target hr_below_target category_reason training_load elevation_gain elevation_loss elevation_source work_pace work_distance work_duration work_hr work_reps work_gain work_loss work_source hr_under_percent hr_total_seconds hr_source trial_pace display_pace range_lower range_upper value lap last_lap reps calibrations')
+ROW = fields('id date started category pace distance duration timer_duration activity_type is_run average_hr max_hr hr_target hr_below_target category_reason training_load elevation_gain elevation_loss elevation_source work_pace work_distance work_duration work_hr work_reps work_gain work_loss work_source hr_under_percent hr_total_seconds hr_source trial_pace display_pace display_overall_pace display_work_pace range_lower range_upper value lap last_lap reps calibrations')
 ROW.update(best_5k=EFFORT,weather=WEATHER,terrain=TERRAIN)
 WEEK = fields('date total_minutes run_minutes run_miles training_load load_count interval_percent interval_minutes sessions sleep_hours sleep_score resting_hr hrv sleep_hours_days sleep_score_days resting_hr_days hrv_days')
 SUMMARY = fields('sessions run_miles total_hours latest_prediction easy_percent last_four_miles interval_count cross_hours')
