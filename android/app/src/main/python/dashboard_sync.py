@@ -8,6 +8,8 @@ from dashboard_metrics import number
 from recording_hr import heart_rate_histogram
 from garminconnect import Garmin
 from best_effort import best_from_original
+from training_routes import recording_data
+from route_preview import route_from_original
 from dashboard_sources import original_zip, station_weather, terrain_summary, merge_weather
 from web_sources import dashboard, terrain
 from sync_job import SyncJob,SyncPaused,TerrainRequests,TerrainDeferred
@@ -166,6 +168,11 @@ def sync_extras(client, cache, result, settings, refresh, report, activities=Non
             report('Reading original recording · '+row['date']+' · '+row['title'][:40],index,len(result['runs']))
             try:
                 raw = job.request(lambda:client.download_activity(identity,dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL),'Original recording · '+row['date'])
+                if not cache.detail(identity,'route_data_v1')[0]:
+                    try:
+                        cache.save_detail(identity,'route_data_v1',recording_data(raw))
+                        cache.save_detail(identity,'route_outline_v1',route_from_original(raw))
+                    except Exception:pass  # Suggestions are optional; metric sync retains its own retry policy.
                 parsers=[]
                 if want_hr or (want_terrain and use_recordings and easy and not have_hr):
                     parsers.append(('hr_histogram_v1',lambda:heart_rate_histogram(raw)))

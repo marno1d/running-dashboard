@@ -5,8 +5,8 @@ Chaquopy 17. Garmin sign-in and downloads run inside the APK on a background
 thread. Termux is used to build and install updates.
 
 The Android source originally developed in `run_dashboard` now lives here in the
-`running-dashboard` repository. Version **0.16.3** brings the web dashboard's
-data sources, calibration history, and presentation into the native Trends, Sessions, Targets, and Profile screens.
+`running-dashboard` repository. Version **0.22.1** brings the web dashboard's
+data sources, calibration history, and presentation into the native Targets, Trends, Sessions, and Profile screens, in that navigation order. Targets is the launch and Back destination.
 
 ## Material 3 interface
 
@@ -71,8 +71,16 @@ measurement available to selection and the data list. Condition adjustments
 share one setting across Trends and Sessions, with date and adjustment controls
 available above both screens. Targets uses
 an inline Estimate / Latest trial / Custom selector, an inline custom-time field,
-large pace cards, and a running-conditions bottom sheet. Equivalent race times
-and calculation details expand on request. Target conditions are independent of
+three compact pace tiles, and inline condition fields with automatic saving. The extra
+ “Your next interval session” heading is removed. Equivalent race times
+stay expanded, with distance, pace and time sharing each row. The custom row's
+distance cell is directly editable, with pace and time beside it in the same row.
+It uses the selected miles/km units, saves valid edits automatically, and refreshes
+predictions after a short typing pause. Clearing it blanks that row's prediction.
+The field and keyboard stay in place while results update, and there is no
+separate entry row or duplicate custom-distance result.
+The About these
+targets card is removed. Target conditions are independent of
 trend adjustments.
 
 Sessions has one newest-first list with dates beside the category on each card,
@@ -80,8 +88,11 @@ search, category filters, and pagination. Dates show the month and day, adding
 the year for older years; separate date headings are removed. After **All**,
 filters start **Short, Medium, Long, Easy, Easy Long**, then the remaining types,
 with **Needs review** last. Compact cards lead with distance, whole-session pace,
-duration, and average HR. Running intervals add a smaller Work row whose pace
-and HR share the primary Pace and Avg HR column positions. Both rows use one
+duration, and average HR. Running intervals add a smaller tinted row containing
+total work distance, pace, work time, and average work HR, excluding recoveries.
+All four values align with the corresponding whole-session columns; the separate
+Work label is removed. Missing work metrics stay blank (—), and accessibility
+descriptions identify the work values explicitly. Both rows use one
 measured grid, including when larger text needs two columns. Elevation gain and
 loss, saved HR-compliance summaries, and temperature share a compact footer
 with the session name directly after temperature. The name uses the remaining
@@ -91,9 +102,42 @@ area has no duplicate heading. Metric columns use measured text widths to fall
 back from four columns to two or one with narrow screens and larger system text.
 The former Trends recent-sessions preview is merged into this list.
 Opening one presents a full-screen detail
-page; its action menu contains category and work-lap corrections. Charts also
+page with a north-up GPS route outline and distinct start/finish markers;
+its action menu contains category and work-lap corrections. The route loads from
+the Garmin original recording on first opening, then uses an app-private cached
+outline for offline reopening. Loading happens off the UI thread and keeps the
+rest of the session readable; failures offer Retry and indoor/no-GPS sessions
+show an empty state. The preview saves a bounded relative shape, with no geographic
+origin, timestamps, or original FIT file; route suggestions separately retain
+coarse location cells in the private cache. Outlines and cells are excluded from comparison
+and training-sample exports, cleared on sign-out, and invalidated with changed
+recordings. No basemap, map API key, or third-party map requests are involved. Charts also
 open full-screen, with accessible data lists for the currently visible series
 and original measurements available through point/session details.
+
+The route reference browser lists saved running sessions newest first, with the
+same search and category filters as Sessions. Each row includes a small north-up
+GPS outline. Cached outlines appear immediately; missing visible previews load
+one at a time while scrolling, without downloading the whole list. A failed
+preview pauses automatic downloads and offers Retry GPS; recordings without GPS
+show No GPS. List shapes use fewer points while preserving recording gaps.
+Tapping a session opens **Confirm route reference**. This compares GPS against
+that prospective selection, independently of the route's existing reference,
+and lists longer matching recordings by distance, longest first. Matches must
+cover at least 85% of the selected path's coarse GPS cells, allowing extensions
+well beyond the original route without matching an isolated path crossing. It checks up
+to five unchecked longer recordings initially; **Check 5 more longer recordings**
+continues from the largest unchecked ones and reuses previous checks. The screen
+shows how many longer recordings remain unchecked. **Keep original selection**
+and **Use this longer session** explicitly save the reference; going back leaves
+the existing reference intact. GPS matching and previews use the private Garmin
+cache, with no external map service.
+
+Profile's Workouts card shows a compact readout of easy durations, interval
+repetitions/work time/warm-up/cooldown, and walking pace. **Edit workouts** opens
+a scrollable overlay containing the editable fields and **Use latest session**
+actions. Valid edits still save automatically. **Done** or dismissing the
+overlay refreshes the compact readout while keeping the Profile scroll position.
 
 ## Dashboard
 
@@ -121,8 +165,125 @@ and original measurements available through point/session details.
   uses a labelled estimate from average HR.
 - Targets tab: interval targets based on predicted 5K, latest measured trial, or a custom `mm:ss`
   time; short (3-minute), medium (5-minute), and long (10-minute) repetitions.
+  The 5K basis has its own saved historical adjustments and HR-normalization
+  mode, independent of Trends and Sessions. Predicted estimates default to both
+  elevation and weather adjustments on. On upgrade, the current 5K chart's HR
+  mode is copied once; later changes stay independent. Latest Trial has separate
+  elevation/weather choices, initially copied from the existing chart flags,
+  and never uses HR normalization. Custom uses the entered time directly.
+  The one-tap Adjustments control toggles both corrections; its overflow edits
+  them individually. The compact basis card puts the 5K time in its header,
+  combines basis status and date, and places an HR on/off chip beside Adjustments.
+  Both controls retain 48 dp touch targets and wrap when enlarged text needs room.
+  The same historical corrections apply to the estimate's trial calibration.
+  Conditions for the next workout remain a separate step and apply once to the
+  resulting base target paces. Changing those conditions never changes the 5K basis.
+  Temperature, humidity, and elevation gain/loss **in feet per mile** are editable directly in the tab,
+  without a menu or Apply button. Valid edits save immediately; target paces update
+  after a short typing pause without replacing the fields or dismissing the keyboard.
+  Every condition field has a Done action. Done, Back, or tapping outside the
+  fields parks focus on the page and dismisses the keyboard; tapping a different
+  field still moves directly between inputs. Short/Medium/Long targets share a
+  compact row, with work duration, pace and units visible in each tile. The tiles
+  wrap when a narrow screen or enlarged system text needs more room.
+  The four compact fields wrap to fewer columns when larger text needs room.
+  Partial or invalid numbers leave the previous complete conditions intact and
+  dim the paces until editing finishes. Manual temperature/humidity edits record
+  a one-hour hold for weather autofill; changing elevation does not extend it.
+  **Reset** restores 45 °F, blank humidity, and zero gain/loss in one tap, dismisses
+  editing, and holds those defaults for one hour. Local weather can override the hold.
+  On upgrade, old elevation totals are retained as a visible note and the new
+  per-mile fields start at zero; old totals are never reinterpreted as rates.
+  Choosing a route, resetting, or manually editing a rate clears the note.
+  **Routes** beside Local weather now selects only a route. Shape, surface and one
+  full reference are configured separately in Profile. Route mode hides the manual
+  elevation-rate inputs; **Manual** restores them without losing their saved values.
+  Weather edits keep route selection. Every workout and race is laid onto the
+  selected route's measured distance/elevation profile, rather than applying one
+  average gain/loss rate to all distances. Tap an interval/easy target or race row
+  for its totals and, for workouts, the phase-by-phase breakdown. Interval tiles
+  show work-only elevation. On a selected route, Easy and Easy long predictions
+  use its Road or Trail 128 bpm model. Without sufficient matching easy/HR history,
+  those plans show an explicit error; recorded reference pace is not substituted.
+  In manual mode, independent **Road** and **Trail** easy-pace estimates
+  target an average HR of **128 bpm** in the entered conditions. They work without
+  a 5K trial or interval prediction. Each uses only its own outdoor easy/easy-long
+  sessions: up to 24 runs from the last 90 days, at least ten minutes long with
+  valid pace and HR. At least five sessions are required; treadmills, virtual runs,
+  and interval workouts are excluded. Historical weather and elevation corrections
+  apply where measurements exist, independently of 5K and chart controls.
+  A robust median pairwise slope fits log pace against HR using pairs within
+  30 days, with at least 8 bpm of observed spread. The target must be within 5 bpm
+  of the observed HR range. When HR barely varies, four nearby runs within 3 bpm
+  can provide a local median instead. Unclear relationships or excessive scatter
+  produce a data-needed message. The displayed typical range uses robust residual
+  spread (with a 2.5% minimum); it is descriptive, not a confidence interval or HR
+  guarantee. Pace rounds to five seconds. Easy workout distance uses the selected
+  45/80-minute duration (configurable in Profile), shown beside each estimate. Trail surface
+  and technical difficulty remain unmodeled; trail estimates retain the usual
+  terrain mix of the runner's recent trail history.
+  Local weather fills temperature and humidity using Open-Meteo's current model
+  data and approximate Android location. The app asks for coarse foreground
+  location when first needed on Targets; declining leaves manual editing available.
+  With access enabled, opening the app or Targets checks for an update, with at
+  most one automatic lookup per ten minutes. Failed attempts count, and the
+  cooldown and manual hold survive app restarts. Local weather can be tapped to
+  bypass the cooldown/hold; only a successful refresh replaces the manual values.
+  Typing temperature or humidity cancels any in-flight lookup. Leaving the app
+  cancels location and HTTP work; there is no background-location permission or
+  repeating background weather job. Elevation fields are never filled by weather.
+  Coordinates are rounded to two decimal places (roughly 1 km north/south, less
+  east/west depending on latitude) before the HTTPS request and are not stored or
+  logged. Only temperature, humidity and timestamps are retained. No account,
+  Garmin data, device identifier or route is sent. Open-Meteo still sees the public
+  IP and request metadata; its [privacy policy](https://open-meteo.com/en/terms#privacy)
+  describes server logs including coordinates, retained for up to 90 days.
+  Requests time out, reject missing/stale values, and preserve saved conditions
+  on failure. The weather timestamp and Open-Meteo attribution appear below the fields.
   Temperature, humidity, elevation gain/loss, equivalent race times, and an
   optional custom race distance use the web app's FVDOT and adjustment math.
+- **Profile → Routes** configures Lakeview Parkway (Provo), west to Jordan River
+  then south (SLC), Liberty Park (SLC), and Bonneville Shoreline (SLC). Each route
+  has one full reference session, an Out-and-back / Loop / One-way shape, Road /
+  Trail surface, and an optional reverse direction. Starting point follows the
+  reference start, or its finish when reversed. GPS suggests a turnaround or loop
+  length; confirm/edit that distance once. A shorter out-and-back turns earlier
+  along the same outward leg, then reverses gain/loss on the return. Its turnaround
+  is solved from the complete planned duration, not half the original reference
+  or half the elapsed time. Loops repeat as needed. One-way runs and outward legs
+  beyond the measured extent use clearly labelled average-terrain extrapolation.
+  Reference suggestions rank GPS overlap and longer coverage, regardless of run
+  category. Check five more recordings to extend suggestions; existing checks
+  are reused. Normal recording sync builds profiles and suggestions without extra
+  download requests. Older per-category references migrate to the longest whole-run
+  reference (or longest remaining reference). An older cache may require one explicit
+  reread of that recording when selecting the route to obtain its elevation profile.
+  A reference needs GPS, distance and recorded altitude; aggregate totals alone
+  are insufficient. Missing or changed references require choosing a reference again.
+- **Profile → Workouts** defines Easy (45 min) and Easy long (80 min), plus warm-up,
+  repetitions, work duration and cooldown for Short / Medium / Long. Initial interval
+  defaults are 10×3, 6×5, and 3×10 minutes, each with 10 min warm-up and cooldown.
+  Every repetition has exactly one minute of walking afterward, including the final
+  rep. Walking pace starts at 20:00/mi and is configurable in the selected distance
+  units. Warm-up and cooldown always use the route surface's estimated 128 bpm easy
+  pace. All phases advance along the route; only work phases determine interval
+  pace and work elevation. The native spatial model evaluates terrain in at most
+  100 m steps and solves out-and-back closure to approximately 0.5 m. Uphill and
+  downhill need not consume equal time. Local elevation effects and weather apply
+  once; walking uses its configured fixed pace. Recorded elevation is smoothed
+  with nearby samples and a 3 m change threshold, stored as a bounded cumulative
+  ascent/descent profile. Technical footing and other trail conditions are not modeled.
+  **Use latest session** explicitly copies parameters from the latest matching run;
+  selected work laps determine reps and median work duration, and the final walking
+  minute is removed from the remaining cooldown duration. Moving recovery laps can
+  populate walking pace; stationary/unusable recoveries leave its existing value.
+  Sync never silently changes workout definitions. Inline valid edits save immediately.
+  Easy durations accept 5–360 min; interval plans are bounded to six hours.
+  Route configurations, distance/elevation profiles and coarse location cells remain
+  app-private and outside comparison/sample exports. Only calculated aggregate route
+  plans are exported. Web pace parity excludes the native spatial model while still
+  comparing its 5K basis. Raw FIT files are discarded; sign-out clears references,
+  profiles and GPS cells. No map or elevation service receives this reference data.
 - Weekly recovery: sleep, resting HR, and HRV appear in three lanes with a
   shared date axis, or one expanded metric. Latest measured weekly averages and
   day counts appear above the chart. Lines break across missing weeks; tapping a
@@ -168,8 +329,9 @@ and elevation; interval work pace uses the work distance and work elevation
 unadjusted, and HR-normalized trend modes do not replace these card paces.
 Distance, time, HR, elevation, and weather values stay recorded. Recorded overall
 and work paces remain available in session details.
-Interval targets show three prominent pace cards; the 5K basis is inline and conditions open in a sheet.
-Equivalent race times and calculation explanations expand on request. Session
+Interval targets show three compact pace tiles; the 5K basis and automatically
+saved condition fields are inline.
+Equivalent race times stay expanded, with an automatically saved custom-distance field. Session
 source/recording details are collapsed by default.
 
 Elevation and temperature adjustments can be enabled independently. Recorded
@@ -183,8 +345,10 @@ Open **Sync** in Profile for **Sync now**, the last sync-check time, and a short
 completion status. Expand **Details** for download counts and
 **Download / resume terrain**.
 This enables terrain and works through missing outdoor routes, newest first,
-without waiting for recovery or weather downloads. Coordinates are sent only to
-OpenTopoData; original FITs and GPS profiles are discarded after aggregation.
+without waiting for recovery or weather downloads. Terrain route samples are sent
+to OpenTopoData; original FITs and GPS profiles are discarded after aggregation.
+The separate local-weather lookup sends only rounded current-location coordinates
+to Open-Meteo while the app is in use.
 Sync runs in an Android `dataSync` foreground service, so downloads continue
 when you switch apps, close the dashboard screen, or turn the display off. Allow
 notifications to see progress and **Pause** outside the app. Tapping the
@@ -312,6 +476,7 @@ python scripts/check_chart.py
 python scripts/check_sync.py
 python scripts/check_refresh.py
 python scripts/check_material.py
+python scripts/check_conditions.py
 python scripts/check_runtime.py
 ```
 
@@ -323,6 +488,35 @@ real-device interaction need an on-device check after installation. Check all
 four tabs in both themes and with larger system text, plus all four Trends
 groups and the home-screen icon (including themed icons), including custom target
 validation, scrolling conditions, session corrections, and expanded chart data.
+In Targets, verify Estimate starts with both adjustments on, and its HR mode
+matches the previous 5K chart mode on first upgrade. Toggle both adjustments,
+each individual correction, and HR normalization; verify the basis labels and
+paces update from cached data. Change Trends settings and confirm Targets stays
+the same, and vice versa. Switch to Latest Trial and Custom: HR normalization
+must not appear, and Custom must use exactly the entered 5K time. Check saved
+choices after switching sources, tabs, and restarting; explicitly turning
+predicted adjustments off must survive reopening. Edit next-workout conditions inline:
+there must be no Apply step, the keyboard and caret must stay put while paces update,
+and tab/app changes must retain saved edits. Try negative temperatures, partial
+numbers, humidity outside 0–100, and negative elevation to check validation.
+Tap outside the fields or use Done/Back: focus and keyboard must clear without
+immediately selecting the first field again. Tapping another condition field
+must switch directly without losing the edit. At normal text size, verify the
+Short/Medium/Long pace tiles all share one row with work durations and pace units;
+enlarged text should wrap them rather than clipping labels or values.
+Change next-workout conditions:
+the 5K basis should stay fixed while target paces change. Check both themes and
+enlarged text for the new controls.
+For local weather, grant approximate location and confirm temperature/humidity
+fill while elevation stays unchanged. Reopening within ten minutes must not
+request again; Local weather must refresh on demand. Denied permission, phone
+location disabled, no recent fix, timeout and no internet must leave conditions
+editable and preserve saved values. Type during a lookup: that edit must win.
+Reopen after a manual edit and confirm the one-hour hold persists; an explicit
+successful refresh should end it. Leaving the app must cancel the lookup. Check
+updates while Garmin sync is running and verify target paces catch up afterward.
+`python scripts/check_weather_endpoint.py` optionally checks the live API contract
+using the provider's public Berlin example, never the phone's actual location.
 For each chart legend, hide and restore every entry, then hide all entries and
 restore one. Expand a chart, zoom, and toggle a series: the view should stay put,
 hidden points should leave View data and point selection, and the card legend
@@ -381,8 +575,9 @@ missing from an existing cache, Refresh fills them; a fresh empty account starts
 its first download automatically.
 
 A versioned, app-private SQLite cache contains summaries, lap metrics, fastest
-5K segments, daily recovery values, weather, and aggregate HR histograms. It
-retains no GPS coordinates, original archives, passwords, or authentication
+5K segments, daily recovery values, weather, aggregate HR histograms, route
+reference configuration, cumulative distance/elevation profiles, relative route outlines, and bounded coarse GPS cells
+for local overlap matching. It retains no original archives, passwords, or authentication
 tokens. Only a nearby station match/distance, public observations, and aggregate
 terrain values are retained for external sources. The upgrade refreshes older cached summary coverage once to add GMT start
 times, station matching, and split summaries. Sign-out clears account data and category/lap corrections.

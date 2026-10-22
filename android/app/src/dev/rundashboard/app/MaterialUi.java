@@ -74,8 +74,22 @@ final class MaterialUi {
         }
     }
     static final class MetricGroup extends ButtonGroup {
+        private int shadedFrom=-1,shadeColor;
+        private final Paint shade=new Paint(Paint.ANTI_ALIAS_FLAG);
         MetricGroup(Context context){super(context,true);}
+        void shadeFrom(int firstChild,int color){shadedFrom=firstChild;shadeColor=color;invalidate();}
         @Override protected int[] childWidths(int available,int[] preferred,int gap){return ButtonLayout.metricWidths(available,preferred,gap);}
+        @Override protected void dispatchDraw(Canvas canvas){
+            if(shadedFrom>=0&&shadedFrom<getChildCount()){
+                int top=getHeight(),bottom=0;
+                for(int i=shadedFrom;i<getChildCount();i++){
+                    View child=getChildAt(i);if(child.getVisibility()==GONE)continue;
+                    top=Math.min(top,child.getTop());bottom=Math.max(bottom,child.getBottom());
+                }
+                if(bottom>top){shade.setColor(shadeColor);float radius=dp(getContext(),6);canvas.drawRoundRect(0,top,getWidth(),bottom,radius,radius,shade);}
+            }
+            super.dispatchDraw(canvas);
+        }
     }
     static final class NavigationItem extends LinearLayout {
         private final ImageView icon;

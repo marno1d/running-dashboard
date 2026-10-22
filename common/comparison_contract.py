@@ -16,9 +16,17 @@ ROW.update(best_5k=EFFORT,weather=WEATHER,terrain=TERRAIN)
 WEEK = fields('date total_minutes run_minutes run_miles training_load load_count interval_percent interval_minutes sessions sleep_hours sleep_score resting_hr hrv sleep_hours_days sleep_score_days resting_hr_days hrv_days')
 SUMMARY = fields('sessions run_miles total_hours latest_prediction easy_percent last_four_miles interval_count cross_hours')
 SUMMARY.update(best_trial=ROW,latest_trial=ROW)
-TARGETS = fields('source error seconds vdot')
+TARGETS = fields('source error seconds vdot basis_adjust_elevation basis_adjust_temperature basis_prediction_mode basis_date')
 TARGETS.update(rows=[fields('category reps pace base_pace distance_basis delta')],
-               races=[fields('label duration base_duration pace')])
+               races=[fields('label duration base_duration pace')],
+               easy=[fields('surface target_hr samples error hr_low hr_high latest_date method base_pace pace pace_low pace_high distance_basis')])
+TARGETS['workout']=fields('kind route_name basis distance duration gain loss')
+TARGETS.update(fields('route_engine route_name route_surface route_shape route_error'))
+PHASE=fields('kind rep start end duration gain loss')
+PLAN=fields('kind surface error distance duration gain loss pace work_distance work_duration work_gain work_loss work_pace turnaround extrapolated')
+PLAN['phases']=[PHASE]
+TARGETS['route_plans']=[PLAN]
+TARGETS['races'][0].update(fields('distance gain loss extrapolated'))
 ANDROID = fields('sync_paused terrain_downloads_paused start end history_start history_end cached_only cache_complete has_saved_data optional_downloads_paused missing_trials missing_intervals split_failures')
 COUNT=fields('done total pending skipped enabled')
 ANDROID['sync']={key:COUNT for key in ('terrain','recovery','hr_recordings','interval_recordings','trial_recordings','weather')}
@@ -27,6 +35,12 @@ ANDROID.update(runs=[ROW],weeks=[WEEK],summary=SUMMARY,targets=TARGETS,
                run_points=[ROW],interval_points=[ROW],trial_points=[ROW],
                prediction_points=[ROW],easy_prediction_points=[ROW],hr_points=[ROW])
 SETTINGS = fields('easy_hr max_hr interval_mode classification_mode full_history include_recovery include_weather include_station_weather include_recordings include_terrain custom_start custom_end custom_range adjust_elevation adjust_temperature prediction_mode interval_pace_mode easy_mode target_source target_time target_temperature target_humidity target_gain target_loss race_distance_miles weekly_metric recovery_metric recent_filter')
+SETTINGS.update(fields('target_prediction_adjust_elevation target_prediction_adjust_temperature target_prediction_mode target_trial_adjust_elevation target_trial_adjust_temperature'))
+SETTINGS.update(fields('target_gain_per_mile target_loss_per_mile target_workout_kind target_route_id target_route_name target_easy_minutes target_easy_long_minutes'))
+SETTINGS['target_route_reference']=fields('distance duration base_pace surface')
+SETTINGS['target_interval_rates']={key:fields('gain_per_mile loss_per_mile distance duration') for key in ('short','medium','long')}
+SETTINGS.update(fields('target_route_engine target_walking_pace'))
+SETTINGS['workout_definitions']={key:fields('warmup reps work cooldown') for key in ('short','medium','long')}
 SETTINGS.update(categories={'*':SCALAR},laps={'*':[SCALAR]})
 ACTIVITY = fields('activityId activityName startTimeLocal startTimeGMT distance duration movingDuration elapsedDuration averageSpeed averageHR maxHR activityType activityTrainingLoad elevationGain elevationLoss averageTemperature fastestSplit_5000')
 ACTIVITY.update(_station_match=fields('station stationName stationRoute stationDistanceMiles'),

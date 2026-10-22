@@ -13,6 +13,7 @@ from comparison_contract import validate_snapshot
 from garmin_backend import Session
 from web_sources import dashboard
 from dashboard_sources import station_weather
+from dashboard_metrics import target_basis_settings
 
 CATEGORY={'short':'short_interval','medium':'medium_interval','long':'long_interval','trial':'5k_time_trial'}
 
@@ -137,7 +138,8 @@ def differences(native,web,case):
     if web_targets:
         check('targets.seconds',native_targets.get('seconds'),web_targets['seconds'],.5)
         check('targets.vdot',native_targets.get('vdot'),web_targets['vdot'],.05)
-        for a,b in zip(native_targets.get('rows',[]),web_targets['rows']):check('targets.'+a['category']+'.pace',a['pace']*1.609344,b['pace'],.5)
+        if native_targets.get('route_engine')!=2:
+            for a,b in zip(native_targets.get('rows',[]),web_targets['rows']):check('targets.'+a['category']+'.pace',a['pace']*1.609344,b['pace'],.5)
     return results
 
 
@@ -156,7 +158,7 @@ def compare(snapshot,matrix=False,replay_current=False):
     try:
         # Adjustment modes share saved downloads and record precision.
         shared=web_data(snapshot,base)
-        prepared=[dict(settings=s,days=selection['days'],data=shared,start=n['start'],end=n['end']) for _,s,n in cases]
+        prepared=[dict(settings=s,target_settings=target_basis_settings(s),days=selection['days'],data=shared,start=n['start'],end=n['end']) for _,s,n in cases]
         proc=subprocess.run(['node',str(ROOT/'android/scripts/compare_web.js')],input=json.dumps(dict(source=str(ROOT/'web_app/dashboard/app.js'),cases=prepared)),text=True,capture_output=True,check=True)
         web_results=json.loads(proc.stdout)
         changes=[d for (name,_,n),w in zip(cases,web_results) for d in differences(n,w,name)]
@@ -165,7 +167,8 @@ def compare(snapshot,matrix=False,replay_current=False):
                     coverage=dict(cache_complete=snapshot['android'].get('cache_complete',False),records=len(snapshot['android']['runs']),health_days=len(snapshot.get('daily',{}).get('rhr',{})),fit_trials=sum(bool(v) for v in snapshot.get('details',{}).get('effort_v1',{}).values())),
                     notes=['Both sides use the same saved downloads and explicit date bounds. This does not repeat live HTTP requests or independently reparse discarded original FIT files.',
                            'Manual category/lap overrides and native per-rep mode can intentionally differ from the web app.',
-                           'Small numeric deltas are listed separately; they are not silently discarded.'])
+                           'Small numeric deltas are listed separately; they are not silently discarded.',
+                           'Route-profile target paces are a native-only model and excluded from web pace parity. The 5K basis is still compared; private elevation profiles are never exported.'])
     finally:session.cache.close()
 
 

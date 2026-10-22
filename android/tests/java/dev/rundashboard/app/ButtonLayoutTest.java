@@ -38,13 +38,15 @@ public final class ButtonLayoutTest {
             desired=new int[]{50*scale,67*scale,64*scale,40*scale};heights=new int[]{36*scale,36*scale,36*scale,36*scale};
             widths=ButtonLayout.metricWidths(available,desired,8);plan=ButtonLayout.place(available,widths,heights,8);inside(available,widths,heights,plan);
         }
-        // Both session rows share one grid: work pace/HR occupy slots 5 and 7.
+        // Both session rows share one grid with distance, pace, time and HR populated.
         for(int available:new int[]{160,224,296,360,600})for(int scale:new int[]{1,2,3}){
-            desired=new int[]{50*scale,67*scale,64*scale,40*scale,58*scale,40*scale,0,32*scale};
-            heights=new int[]{36*scale,36*scale,36*scale,36*scale,19*scale,19*scale,0,19*scale};
+            desired=new int[]{50*scale,67*scale,64*scale,40*scale,44*scale,40*scale,50*scale,32*scale};
+            heights=new int[]{36*scale,36*scale,36*scale,36*scale,23*scale,23*scale,23*scale,23*scale};
             widths=ButtonLayout.metricWidths(available,desired,8);plan=ButtonLayout.place(available,widths,heights,8);
             inside(available,widths,heights,plan);
             check(plan.left[1]==plan.left[5],"overall and interval pace columns must align");
+            check(plan.left[0]==plan.left[4],"overall and interval distance columns must align");
+            check(plan.left[2]==plan.left[6],"overall and interval time columns must align");
             check(plan.left[3]==plan.left[7],"overall and interval HR columns must align");
             check(plan.top[5]>plan.top[1]&&plan.top[7]>plan.top[3],"work values follow overall values");
             if(available>=296&&scale==1){
