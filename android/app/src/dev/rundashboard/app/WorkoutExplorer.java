@@ -35,7 +35,7 @@ final class WorkoutExplorer extends LinearLayout {
             labels[i]=easy?"Mile "+row.optInt("index")+(row.optBoolean("partial")?" · final partial mile":""):
                 kind.equals("walk")?"Walking recovery · after rep "+row.optInt("rep"):
                 kind.equals("work")?"Rep "+row.optInt("rep")+" of "+reps:
-                kind.equals("warmup")?"Warm-up · 128 bpm":kind.equals("cooldown")?"Cooldown · 128 bpm":"Easy · 128 bpm";
+                kind.equals("warmup")?"Warm-up · easy":kind.equals("cooldown")?"Cooldown · easy":"Easy · NSM";
         }
         trace=new WorkoutTrace(numbers(data.optJSONArray("nodes")),numbers(data.optJSONArray("paces")),starts,ends,labels);
         stepText=label(15,palette.primary,true);stepText.setMinHeight(dp(24));addView(stepText,new LayoutParams(-1,-2));

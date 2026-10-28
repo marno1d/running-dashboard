@@ -8,7 +8,7 @@ for(const entry of input.cases){
   let targetPhase=false;
   const ids={customTargetTime:settings.target_time||'',targetTemperatureF:settings.target_temperature??45,
     targetHumidityPct:settings.target_humidity??'',targetElevationGainFeet:settings.target_gain??'',targetElevationLossFeet:settings.target_loss??''};
-  const choices={predictionMode:settings.prediction_mode==='intensity'?'hrAdjusted':'pace',
+  const choices={predictionMode:settings.prediction_mode==='observed'?'pace':'hrAdjusted',
     intervalPaceMode:settings.interval_pace_mode||'observed',easyPaceMode:settings.easy_mode||'observed',targetSource:settings.target_source||'predicted'};
   const document={querySelector(selector){
     if(selector.includes('data-adjust')){const basis=targetPhase?entry.target_settings:settings;return {checked:selector.includes('elevation')?!!basis.adjust_elevation:!!basis.adjust_temperature};}
@@ -32,7 +32,7 @@ for(const entry of input.cases){
       easy_prediction_points:buildEasyPredicted5kSeries(records,DATA.records,getPredictionMode()).map(r=>({date:r.date,duration:r.value})),targets:null};
   })()`,context,{timeout:30000});
   // Evaluate Targets under its own historical settings using the same web mathematics.
-  targetPhase=true;choices.predictionMode=entry.target_settings.prediction_mode==='intensity'?'hrAdjusted':'pace';
+  targetPhase=true;choices.predictionMode=entry.target_settings.prediction_mode==='observed'?'pace':'hrAdjusted';
   result.targets=vm.runInContext(`(()=>{
     const basis=selectedTargetBasis();if(!basis.seconds)return null;
     const value=intervalTargetsFrom5k(basis.seconds),mileage=latestIntervalMileageByTarget();

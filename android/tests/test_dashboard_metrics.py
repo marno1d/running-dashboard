@@ -83,6 +83,18 @@ process.stdout.write(JSON.stringify(vm.runInContext(input.expression,context)));
             for first,second in zip(native,expected):
                 self.assertAlmostEqual(first['duration'],second['value'],places=6)
 
+    def test_trial_without_earlier_workouts_is_a_benchmark_in_both_apps(self):
+        trial=dict(row(1,'2026-09-10','trial'),best_5k=dict(duration=1080))
+        later=dict(row(2,'2026-09-10','short',pace=250,hr=160),started='2026-09-10 10:00:00')
+        records=[dict(id=r['id'],date=r['date'],datetime=r['started'],category='5k_time_trial' if r['category']=='trial' else 'short_interval',
+                      intervalPaceSecPerMile=(r['work_pace'] or 0)*1.609344,intervalAvgHr=r['work_hr'],
+                      fastest5kSec=r.get('best_5k',{}).get('duration')) for r in (trial,later)]
+        native=predictions([trial,later],{},{} )[0]
+        web=self.web("buildPredicted5kSeries(DATA.records,DATA.records,'hrAdjusted')",records)
+        self.assertEqual([r['duration'] for r in native],[r['value'] for r in web])
+        self.assertEqual(native[0]['samples'],0)
+        self.assertEqual(web[0]['count'],0)
+
     def test_easy_predictions_with_trails_and_intensity_match_web(self):
         rows=[row(i,f'2026-09-{i+1:02d}',pace=310+i*2,hr=120+i) for i in range(12)]
         rows[4]['activity_type']='trail_running'
@@ -167,11 +179,11 @@ class DashboardTest(unittest.TestCase):
         self.assertGreater(hot['rows'][0]['pace'],cool['rows'][0]['pace'])
         self.assertEqual(targets([],[],{})['error'],'No interval prediction available yet.')
 
-    def test_easy_estimate_requires_two_nearby_trials_and_excludes_treadmill(self):
+    def test_easy_estimate_anchors_to_one_trial_and_excludes_treadmill(self):
         rows=[row(i,f'2026-09-{i+1:02d}',pace=320+i) for i in range(12)]
         trial=dict(row(20,'2026-09-07','trial'),best_5k={'duration':1150})
         rows.append(trial);rows.sort(key=lambda r:r['started'])
-        self.assertEqual(predictions(rows,{},{} )[1],[])
+        self.assertTrue(predictions(rows,{},{} )[1])
         rows.append(dict(row(21,'2026-09-13','trial'),best_5k={'duration':1140}))
         self.assertTrue(predictions(rows,{},{} )[1])
         for item in rows:item['activity_type']='treadmill_running'

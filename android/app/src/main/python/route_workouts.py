@@ -67,7 +67,7 @@ def workout_definition(settings,kind):
 def phases_for(settings,kind,easy_pace,work_pace=None):
     definition=workout_definition(settings,kind)
     needs_easy=kind in ('easy','easy_long') or definition.get('warmup',0)>0 or definition.get('cooldown',0)>0
-    if needs_easy and (not easy_pace or easy_pace<=0):raise ValueError('A reliable 128 bpm easy-pace estimate is needed for this surface.')
+    if needs_easy and (not easy_pace or easy_pace<=0):raise ValueError('Choose a valid 5K basis for your easy pace.')
     if kind in ('easy','easy_long'):return [dict(kind='easy',duration=definition['duration']*60,base_pace=easy_pace)]
     if not work_pace or work_pace<=0:raise ValueError('A 5K basis is needed for interval pace.')
     walking=float(settings.get('target_walking_pace',WALKING_PACE))
@@ -225,12 +225,12 @@ def apply_route(target,route,data,settings):
 
 def apply_manual_plans(target,settings):
     """Workout details for uniform manually entered rates, with both easy surfaces."""
-    from dashboard_metrics import MILE,number
+    from dashboard_metrics import MILE,number,target_surface
     gain=number(settings.get('target_gain_per_mile')) or 0;loss=number(settings.get('target_loss_per_mile')) or 0
     profile=[[0,0,0],[MILE,gain*.3048,loss*.3048]]
     plans=[];rows={r['category']:r for r in target.get('rows',[])}
     surfaces={r['surface']:r for r in target.get('easy',[]) if not r.get('error')}
-    for kind,surface in [(kind,surface) for kind in ('easy','easy_long') for surface in ('road','trail')]+[(kind,'road') for kind in ('short','medium','long')]:
+    for kind,surface in [(kind,surface) for kind in ('easy','easy_long') for surface in ('road','trail')]+[(kind,target_surface(settings)) for kind in ('short','medium','long')]:
         easy=surfaces.get(surface,{});row=rows.get(kind,{})
         try:
             phases=phases_for(settings,kind,easy.get('base_pace'),row.get('base_pace'))

@@ -12,7 +12,14 @@ final class ButtonLayout {
     }
     /** Keep four metrics together when readable, then use two columns or one. */
     static int[] metricWidths(int available,int[] preferred,int gap){
-        available=Math.max(0,available);int columns=Math.min(4,preferred.length);
+        return gridWidths(available,preferred,gap,4);
+    }
+    /** Conditions may have five fields; retain all five when their values fit. */
+    static int[] conditionWidths(int available,int[] preferred,int gap){
+        return gridWidths(available,preferred,gap,preferred.length);
+    }
+    private static int[] gridWidths(int available,int[] preferred,int gap,int maximum){
+        available=Math.max(0,available);int columns=Math.min(maximum,preferred.length);
         if(columns==0)return new int[0];
         while(columns>1){
             int slot=Math.max(0,(available-gap*(columns-1))/columns);boolean fits=true;

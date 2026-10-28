@@ -5,7 +5,7 @@ Chaquopy 17. Garmin sign-in and downloads run inside the APK on a background
 thread. Termux is used to build and install updates.
 
 The Android source originally developed in `run_dashboard` now lives here in the
-`running-dashboard` repository. Version **0.30.1** brings the web dashboard's
+`running-dashboard` repository. Version **0.32.0** brings the web dashboard's
 data sources, calibration history, and presentation into the native Targets, Trends, Sessions, and Profile screens, in that navigation order. Targets is the launch and Back destination.
 
 ## Local route review
@@ -228,8 +228,31 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   trail triangles. It fits to data by default; the fixed web scale remains an option.
 - **5K performance**: measured fastest continuous 5 km, calibrated interval estimates,
   and outdoor easy-speed estimates. Each series can be hidden independently.
-  Easy estimates require at least two trial calibrations. Treadmill activities
-  and trail activities do not contribute to outdoor easy-speed estimates.
+  Estimates are chronological: each trial anchors the subsequent line, while
+  earlier points keep the information available then. A trial and nearby recorded
+  workouts are needed for a training trend; without an interval baseline the new
+  trial remains the current benchmark. Easy estimates need four road easy runs
+  in the 21 days before a trial. Treadmill and trail runs do not contribute.
+  HR normalization is the prediction default. On first upgrade to this fit, both
+  prediction HR controls turn on once; subsequent explicit off choices persist.
+  Each trial freezes a reference HR and baseline pace for Short, Medium and Long
+  separately (three recent workouts each), plus a ten-run easy window. Later
+  paces are compared at that reference effort, then category-relative changes
+  update the trial time. The reference is observed training effort, not a claim
+  about lactate threshold. Prediction normalization uses bpm directly and does
+  not depend on maximum/resting-HR estimates. Missing HR uses an explicitly
+  labelled pace-only baseline; observations more than 15 bpm from a known
+  reference are excluded rather than extrapolated.
+  HR slopes use adjacent, same-category pairs up to 21 days apart within the
+  90 days preceding the trial, with at least 3 bpm separation. Positive slopes
+  from .001 to .03 log-pace/bpm are shrunk toward .0075 for intervals or .01 for
+  easy running, using eight prior-equivalent pairs. These are conservative model
+  assumptions, not established physiological constants. Slopes and reference
+  effort remain fixed until the next trial. No generated target enters the fit.
+  The basis shows the anchor date, labels missing-HR fallback, and flags anchors
+  older than 90 days. The web dashboard uses the same chronological algorithm.
+  Changing historical corrections intentionally recalculates the corrected
+  series; adding future records does not rewrite earlier forecasts.
   When an original recording is unavailable, Garmin's recorded fastest 5K split
   can be used with an explicit source label.
 - **Easy effort** starts with time below the editable HR ceiling on a 0–100%
@@ -239,9 +262,9 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
 - Targets tab: interval targets based on predicted 5K, latest measured trial, or a custom `mm:ss`
   time; short (3-minute), medium (5-minute), and long (10-minute) repetitions.
   The 5K basis has its own saved historical adjustments and HR-normalization
-  mode, independent of Trends and Sessions. Predicted estimates default to both
-  elevation and weather adjustments on. On upgrade, the current 5K chart's HR
-  mode is copied once; later changes stay independent. Latest Trial has separate
+  mode, independent of Trends and Sessions. Predicted estimates default to
+  elevation, weather and HR normalization on. Trends and Targets keep independent
+  choices after the one-time prediction-fit migration. Latest Trial has separate
   elevation/weather choices, initially copied from the existing chart flags,
   and never uses HR normalization. Custom uses the entered time directly.
   The one-tap Adjustments control toggles both corrections; its overflow edits
@@ -263,42 +286,49 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   Partial or invalid numbers leave the previous complete conditions intact and
   dim the paces until editing finishes. Manual temperature/humidity edits record
   a one-hour hold for weather autofill; changing elevation does not extend it.
-  **Reset** restores 45 °F, blank humidity, and zero gain/loss in one tap, dismisses
-  editing, and holds those defaults for one hour. Local weather can override the hold.
-  On upgrade, old elevation totals are retained as a visible note and the new
-  per-mile fields start at zero; old totals are never reinterpreted as rates.
-  Choosing a route, resetting, or manually editing a rate clears the note.
-  **Routes** beside Local weather now selects only a route. Shape, surface and one
-  full reference are configured separately in Profile. The **+ft/mi** and **−ft/mi**
+  Five matching fields share one row when readable: Temp, RH, gain/loss per mile,
+  and Trail (On/Off). Larger text and long values wrap the grid rather than clip.
+  Beneath them, **Weather**, **Routes**, and **Reset** share a compact action row.
+  Weather and Routes integrate a trailing clear icon inside their chip, visible
+  only while active; these are not separate outlined buttons. Weather's clear
+  restores 45 °F and blank humidity, cancels a pending lookup, and holds those
+  defaults for one hour. It preserves route, elevation and Trail. Routes' clear
+  removes the selected route, zeros both elevation rates and switches Trail off,
+  preserving weather. **Reset** clears both groups at once. Explicit Weather can
+  refresh again during the hold. The route picker also offers the same route clear.
+  The selected route name appears in the existing conditions summary rather than
+  a full-width banner. A selected route sets and locks elevation and Trail until
+  cleared. Routes are configured separately in Profile with shape, surface and
+  one reference. The **+ft/mi** and **−ft/mi**
   fields stay visible. Choosing a route fills its average gain and loss per mile,
   rounded to one decimal place (for example, **45.7 ft/mi**). Manual edits also
   save and display one decimal; clearing a rate becomes **0.0**. Predictions use
-  those exact rounded values, with no hidden extra precision. Editing either rate
-  clears the route association and uses the manually entered conditions. Weather
-  edits keep route selection. All workouts and races scale the same average rates
-  to their own distances; a shorter workout no longer picks individual hills from
-  the reference. Tap an interval/easy target or race row
+  those rounded values for manual conditions. While a route is selected the rates
+  are read-only; clearing the route enables editing. Weather edits keep route
+  selection. Route plans follow the recorded terrain over each workout; manual
+  plans scale uniform elevation rates to their own distances. Tap a target or race row
   for its totals and, for workouts, the phase-by-phase breakdown. Interval tiles
   show work-only elevation. On a selected route, Easy and Easy long predictions
-  use its Road or Trail 128 bpm model. Without sufficient matching easy/HR history,
-  those plans show an explicit error; recorded reference pace is not substituted.
-  In manual mode, independent **Road** and **Trail** easy-pace estimates
-  target an average HR of **128 bpm** in the entered conditions. They work without
-  a 5K trial or interval prediction. Each uses only its own outdoor easy/easy-long
-  sessions: up to 24 runs from the last 90 days, at least ten minutes long with
-  valid pace and HR. At least five sessions are required; treadmills, virtual runs,
-  and interval workouts are excluded. Historical weather and elevation corrections
-  apply where measurements exist, independently of 5K and chart controls.
-  A robust median pairwise slope fits log pace against HR using pairs within
-  30 days, with at least 8 bpm of observed spread. The target must be within 5 bpm
-  of the observed HR range. When HR barely varies, four nearby runs within 3 bpm
-  can provide a local median instead. Unclear relationships or excessive scatter
-  produce a data-needed message. The displayed typical range uses robust residual
-  spread (with a 2.5% minimum); it is descriptive, not a confidence interval or HR
-  guarantee. Pace rounds to five seconds. Easy workout distance uses the selected
-  45/80-minute duration (configurable in Profile), shown beside each estimate. Trail surface
-  and technical difficulty remain unmodeled; trail estimates retain the usual
-  terrain mix of the runner's recent trail history.
+  use exactly **70% of 5K speed**: easy pace = 5K pace / 0.70. This closely
+  approximates the NSM book's easy table, without table rounding or a 15:20–30:00
+  time limit. The same Estimate / Latest trial / Custom 5K basis drives interval
+  and easy targets. An 18:00 basis gives about 8:17/mi; 20:00 gives 9:12/mi.
+  This is a speed fraction, independent of the race-duration VDOT conversion
+  used for intervals.
+  Easy and Easy Long remain separate cards, with their configured durations and
+  mile splits. Neither is a prescription to average 128 bpm. Warm-up and cooldown
+  also use the NSM easy pace for the selected surface.
+  Trail starts with the 70%-speed road pace and an estimated surface multiplier from
+  recent historical road/trail easy runs. Up to 24 eligible runs per surface from
+  the last 90 days are corrected for historical weather/elevation, then compared
+  at a common 128 bpm to isolate the ratio from differences in effort. Each
+  surface needs five runs, a supported HR relationship or four nearby observations,
+  and limited scatter. This common-HR calculation calibrates only the relative
+  trail slowdown; the absolute target always comes from the selected 5K basis.
+  A ratio below one or missing calibration uses an explicit terrain-only label.
+  Upcoming terrain and weather apply once, after the surface multiplier. The
+  trail row reports the estimated slowdown and trail sample count. This pools
+  recent trails; it does not identify route-specific rocks, mud or technicality.
   Local weather fills temperature and humidity using Open-Meteo's current model
   data and approximate Android location. The app asks for coarse foreground
   location when first needed on Targets; declining leaves manual editing available.
@@ -359,9 +389,9 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   complete recorded laps and balance ascent/descent for closure, and one-way uses
   the measured extent. Reversing one-way direction swaps gain
   and loss. The resulting average rates summarize the course in Conditions. A
-  selected-route chip shows the name/surface and an × to clear it. Elevation fields
-  are gray and read-only until the route is cleared; clearing keeps their current
-  values as manual rates. Reset preserves an active route and resets weather only.
+  compact Routes chip contains its clear icon; the summary names the route.
+  Elevation and Trail are gray and read-only until the route is cleared. Clearing
+  Routes resets elevation and surface, preserving weather; Reset clears both groups.
   Workouts and races follow the actual saved terrain profile rather than applying
   the average rate uniformly. Out-and-back workouts turn early to fit their timed
   duration; loops combine complete reference laps into one closed representative
@@ -400,21 +430,24 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   repetition and cooldown with pace, duration, distance and elevation. Walking
   recoveries remain in the time/distance simulation and move later repetitions
   along the route, but have no visible rows. Easy and Easy Long are separate cards
-  using their configured durations, the route surface's 128 bpm model, and whole-run
+  using their configured durations, 70% of 5K speed and the estimated trail factor, and whole-run
   average pace. Tap for mile splits including the final partial mile. Split time,
   distance and gain/loss sum to the workout totals. Without a selected route, the
-  two easy cards offer Road and Trail rows with splits for uniform manual rates.
+  two easy cards each show the surface selected by the Trail toggle, with splits
+  for uniform manual rates. The same selection supplies interval warm-up/cooldown
+  pace in manual plans.
 - **Profile → Workouts** defines Easy (45 min) and Easy long (80 min), plus warm-up,
   repetitions, work duration and cooldown for Short / Medium / Long. Initial interval
   defaults are 10×3, 6×5, and 3×10 minutes, each with 10 min warm-up and cooldown.
   Every repetition has exactly one minute of walking afterward, including the final
   rep. Walking pace starts at 20:00/mi and is configurable in the selected distance
-  units. Warm-up and cooldown always use the route surface's estimated 128 bpm easy
-  pace. Phases scale elevation from the visible average rates; only work phases
+  units. Warm-up and cooldown use the NSM easy pace with the estimated surface
+  slowdown. Phases follow the route terrain (or uniform manual rates); only work phases
   determine interval pace and work elevation. Elevation effects and weather apply
   once; walking uses its configured fixed pace. Recorded reference elevation is smoothed
   with nearby samples and a 3 m change threshold, stored as a bounded cumulative
-  ascent/descent profile. Technical footing and other trail conditions are not modeled.
+  ascent/descent profile. Trail surface slowdown is a pooled historical estimate;
+  day-specific footing and technical difficulty are not measured.
   **Use latest session** explicitly copies parameters from the latest matching run;
   selected work laps determine reps and median work duration, and the final walking
   minute is removed from the remaining cooldown duration. Moving recovery laps can
@@ -738,6 +771,22 @@ they are not duplicated in the Android source.
 
 For optional development sample inspection, `python scripts/receive_sample.py --open` opens the existing in-app consent prompt. Samples exclude credentials,
 location, and heart rate and are stored only in the ignored `.state` directory.
+
+## Evaluate prediction forecasts
+
+From `android/`, run:
+
+```sh
+.venv/bin/python scripts/evaluate_predictions.py .state/route-review-snapshot.json
+```
+
+The offline report scores the last estimate strictly before each trial, requiring
+an estimate in the prior 21 days. It never scores the trial's own new anchor as a
+forecast. It compares observed/HR-normalized modes with historical corrections
+on/off, reports interval and easy errors, and writes only an ignored private JSON
+report. There are too few personal trials to establish reliable prediction
+intervals or select optimal HR coefficients. A new anchor matching its own trial
+is calibration, not evidence of forecasting accuracy.
 
 ## Compare current saved data with the web app
 

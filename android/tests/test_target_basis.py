@@ -45,14 +45,14 @@ class TargetBasisTest(unittest.TestCase):
     def dashboard(self,**changes):
         return self.session.cached_dashboard('2026-10-10',30,json.dumps(dict(self.settings,**changes)))
 
-    def test_predicted_defaults_are_adjusted_with_hr_normalization_off(self):
+    def test_predicted_defaults_are_adjusted_with_hr_normalization_on(self):
         result=self.dashboard()
         target=result['targets']
         self.assertTrue(target['basis_adjust_elevation'])
         self.assertTrue(target['basis_adjust_temperature'])
-        self.assertEqual(target['basis_prediction_mode'],'observed')
+        self.assertEqual(target['basis_prediction_mode'],'intensity')
         rows=sorted(result['runs'],key=lambda row:row['started'])
-        expected=predictions(rows,dict(self.settings,adjust_elevation=True,adjust_temperature=True),self.health)[0][-1]
+        expected=predictions(rows,dict(self.settings,adjust_elevation=True,adjust_temperature=True,prediction_mode='intensity'),self.health)[0][-1]
         self.assertAlmostEqual(target['seconds'],expected['duration'])
         self.assertEqual(target['basis_date'],'2026-10-09')
         self.assertNotEqual(target['seconds'],result['prediction_points'][-1]['duration'])

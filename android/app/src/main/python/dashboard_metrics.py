@@ -201,55 +201,11 @@ def normalized_paces(rows, health, settings, interval=False):
     return output
 
 
-def raw_predictions(rows, settings, health):
-    intervals = [r for r in rows if r['category'] in INTERVALS and r.get('work_pace')]
-    easy = [r for r in rows if r['category'] in EASY and r.get('pace') and r.get('activity_type') == 'running']
-    intensity_mode = settings.get('prediction_mode') == 'intensity'
-    interval_paces = normalized_paces(intervals,health,settings,True) if intensity_mode else {}
-    easy_paces = normalized_paces(easy,health,settings) if intensity_mode else {}
-    recent = {k:[] for k in INTERVALS}
-    raw, raw_easy = [], []
-    previous = None
-    for row in intervals:
-        if previous and (date.fromisoformat(row['date'])-date.fromisoformat(previous['date'])).days > 30:
-            recent = {k:[] for k in INTERVALS}
-        previous = row
-        pace = interval_paces.get(row['id']) if intensity_mode else adjusted_pace(row,row['work_pace'],settings,True)
-        if pace is None:
-            continue
-        recent[row['category']] = (recent[row['category']]+[pace])[-3:]
-        value = mean([mean(v) for v in recent.values() if v])*1.609344*FIVE_K_MILES
-        raw.append(dict(id=row['id'],date=row['date'],started=row['started'],duration=value,category='prediction'))
-    recent_easy = []
-    previous = None
-    for row in easy:
-        if previous and (date.fromisoformat(row['date'])-date.fromisoformat(previous['date'])).days > 45:
-            recent_easy = []
-        previous = row
-        pace = easy_paces.get(row['id']) if intensity_mode else adjusted_pace(row,row['pace'],settings)
-        if pace is not None:
-            recent_easy = (recent_easy+[pace])[-10:]
-            if len(recent_easy) >= 4:
-                raw_easy.append(dict(id=row['id'],date=row['date'],started=row['started'],duration=median(recent_easy)*1.609344*FIVE_K_MILES,category='easy_prediction'))
-    return raw,raw_easy
-
-
 def predictions(rows, settings, health, calibration_rows=None):
-    calibration_rows = rows if calibration_rows is None else calibration_rows
-    raw,raw_easy = raw_predictions(rows,settings,health)
-    calibration_raw,calibration_easy = raw_predictions(calibration_rows,settings,health)
-    def calibrate(series, calibration_series, minimum, lower, upper, chronological):
-        ratios = []
-        for trial in calibration_rows:
-            if trial['category']!='trial' or not trial.get('best_5k'):
-                continue
-            prior = [p for p in calibration_series if 0 <= (date.fromisoformat(trial['date'])-date.fromisoformat(p['date'])).days <= 21
-                     and (not chronological or p['started'] <= trial['started'])]
-            if prior:
-                ratios.append(adjusted_trial(trial,settings)/prior[-1]['duration'])
-        ratio = clamp(median(ratios),lower,upper) if len(ratios)>=minimum else (1 if minimum==1 else None)
-        return [dict(p,duration=p['duration']*ratio,calibrations=len(ratios)) for p in series] if ratio else []
-    return calibrate(raw,calibration_raw,1,.75,1.05,False), calibrate(raw_easy,calibration_easy,2,.5,.9,True)
+    # Prediction normalization uses measured bpm at a fixed trial-era reference,
+    # so resting/max-HR estimates cannot rewrite the historical fit.
+    from prediction_fit import prediction_series
+    return prediction_series(rows,settings,calibration_rows)
 
 
 def web_sum(values,digits=None):
@@ -301,7 +257,13 @@ def target_basis_settings(settings):
     return dict(settings,
                 adjust_elevation=False if custom else settings.get(prefix+'adjust_elevation',predicted),
                 adjust_temperature=False if custom else settings.get(prefix+'adjust_temperature',predicted),
-                prediction_mode=settings.get('target_prediction_mode','observed') if predicted else 'observed')
+                prediction_mode=settings.get('target_prediction_mode','intensity') if predicted else 'observed')
+
+
+def target_surface(settings):
+    """A selected route owns the surface; manual conditions default to road."""
+    value=settings.get('target_route_surface') if settings.get('target_route_id') else settings.get('target_surface')
+    return 'trail' if value=='trail' else 'road'
 
 
 def upcoming_pace(pace, distance, settings, category=None):
@@ -319,8 +281,18 @@ def upcoming_pace(pace, distance, settings, category=None):
     return max(1,pace/(1-reduction)+elevation_delta(pace,distance,gain*.3048,loss*.3048))
 
 
+def nsm_easy_target(seconds, settings):
+    """Easy speed is 70% of 5K speed; pace is seconds/km, not 70% of pace."""
+    seconds=positive(seconds)
+    if seconds is None:
+        return dict(error='Choose a valid 5K basis for your easy pace.')
+    base = seconds/5/.70
+    shown = upcoming_pace(base,5000,settings)
+    return dict(base_pace=base,pace=shown,delta=shown-base)
+
+
 def easy_targets(rows, settings, as_of):
-    """Independent empirical road/trail estimates at 128 bpm, not a 5K conversion.
+    """Historical road/trail calibration at a common HR, not workout targets.
 
     Fit log(pace) against HR with median pairwise slopes within 30 days to limit
     fitness drift. Require recent observations near the requested HR; do not
@@ -385,6 +357,39 @@ def easy_targets(rows, settings, as_of):
     return result
 
 
+def nsm_easy_targets(rows, settings, as_of, target):
+    """Anchor both surfaces to 70% of 5K speed; history supplies only a trail ratio.
+
+    Compare weather/elevation-corrected easy paces at the same HR so the
+    surface factor does not duplicate the upcoming route's hills or heat.
+    It is pooled across recent trails, not a route-specific technicality model.
+    """
+    book=target.get('nsm_easy') or {}
+    if not book or book.get('error'):
+        error=book.get('error') or target.get('error') or 'Choose a 5K basis for the NSM easy pace.'
+        return [dict(surface=surface,error=error) for surface in ('road','trail')]
+    road,trail=easy_targets(rows,settings,as_of)
+    factor=None
+    if not road.get('error') and not trail.get('error'):
+        ratio=trail['base_pace']/road['base_pace']
+        if ratio>=1:factor=ratio
+    result=[]
+    for surface in ('road','trail'):
+        multiplier=factor if surface=='trail' and factor is not None else 1
+        base=book['base_pace']*multiplier
+        shown=upcoming_pace(base,5000,settings)
+        entry=dict(surface=surface,base_pace=base,pace=shown,method='nsm_speed',
+                   surface_factor=multiplier,samples=0)
+        if surface=='trail':
+            if factor is None:
+                entry['surface_note']='Terrain only · insufficient history for a trail slowdown.'
+            else:
+                entry.update(method='nsm_speed_trail_factor',samples=trail['samples'],road_samples=road['samples'],
+                             surface_note='Estimated trail slowdown from recent road/trail runs.')
+        result.append(entry)
+    return result
+
+
 def targets(rows, prediction, settings):
     source = settings.get('target_source','predicted')
     basis = target_basis_settings(settings)
@@ -400,7 +405,10 @@ def targets(rows, prediction, settings):
         if trial:metadata['basis_date'] = trial['date']
     else:
         seconds = prediction[-1]['duration'] if prediction else None
-        if prediction:metadata['basis_date'] = prediction[-1]['date']
+        if prediction:
+            metadata['basis_date'] = prediction[-1]['date']
+            for key in ('anchor_date','anchor_seconds','anchor_age_days','hr_normalized','samples'):
+                if key in prediction[-1]:metadata[key]=prediction[-1][key]
     if not seconds:
         return dict(metadata,source=source,error='Enter a 5K time (mm:ss).' if source=='custom' else 'No 5K trial available.' if source=='latest' else 'No interval prediction available yet.')
     vdot = vdot_from_5k(seconds)
@@ -423,7 +431,8 @@ def targets(rows, prediction, settings):
         distance = custom_distance*MILE
         duration = race_seconds(distance,vdot)
         races.append(dict(label=str(custom_distance)+' miles',duration=adjusted(duration/distance*1000,distance)*distance/1000,base_duration=duration,pace=adjusted(duration/distance*1000,distance)))
-    return dict(metadata,source=source,seconds=seconds,vdot=vdot,rows=target_rows,races=races)
+    return dict(metadata,source=source,seconds=seconds,vdot=vdot,rows=target_rows,races=races,
+                nsm_easy=nsm_easy_target(seconds,settings))
 
 
 def target_workout(target,settings):
@@ -434,10 +443,10 @@ def target_workout(target,settings):
         result['basis']='reference work'
     else:
         duration=(positive(settings.get('target_easy_long_minutes' if kind=='easy_long' else 'target_easy_minutes')) or (80 if kind=='easy_long' else 45))*60
-        prediction=next((r for r in target.get('easy',[]) if r['surface']==ref.get('surface','road') and not r.get('error')),None)
+        prediction=next((r for r in target.get('easy',[]) if r['surface']==target_surface(settings) and not r.get('error')),None)
         pace=prediction['pace'] if prediction else upcoming_pace(ref['base_pace'],None,settings) if positive(ref.get('base_pace')) else None
         distance=duration/pace*1000 if pace else None
-        result['basis']='128 bpm estimate' if prediction else 'reference pace'
+        result['basis']='NSM easy estimate' if prediction else 'reference pace'
     if distance and duration:
         result.update(distance=distance,duration=duration,gain=(number(settings.get('target_gain_per_mile')) or 0)*distance/MILE,
                       loss=(number(settings.get('target_loss_per_mile')) or 0)*distance/MILE)
@@ -578,7 +587,9 @@ def enrich(result, activities, splits, health, weather, settings, visible_range=
     target_prediction = predictions(all_rows,target_basis_settings(settings),health)[0] if settings.get('target_source','predicted')=='predicted' else []
     result['prediction_points'],result['easy_prediction_points'] = predicted,easy_predicted
     result['targets'] = targets(all_rows,target_prediction,settings)
-    result['targets']['easy'] = easy_targets(all_rows,settings,context_end)
+    if result['targets'].get('anchor_date'):
+        result['targets']['anchor_age_days']=max(0,(date.fromisoformat(context_end)-date.fromisoformat(result['targets']['anchor_date'])).days)
+    result['targets']['easy'] = nsm_easy_targets(all_rows,settings,context_end,result['targets'])
     result['targets']['workout'] = target_workout(result['targets'],settings)
     easy = [r for r in rows if r['category'] in EASY and r.get('pace')]
     intervals = [r for r in rows if r['category'] in INTERVALS and r.get('work_pace')]

@@ -44,10 +44,6 @@ const EASY_PACE_RANGE_WINDOW = 10;
 const EASY_PACE_RANGE_MIN_POINTS = 4;
 const EASY_PACE_RANGE_GAP_DAYS = 45;
 const EASY_PACE_RANGE_SMOOTHING = 0.35;
-const PREDICTION_CALIBRATION_LOOKBACK_DAYS = 21;
-const EASY_5K_MIN_CALIBRATIONS = 2;
-const EASY_5K_CALIBRATION_MIN = 0.5;
-const EASY_5K_CALIBRATION_MAX = 0.9;
 const EASY_CATEGORIES = new Set(["easy", "easy_long"]);
 const INTERVAL_CATEGORIES = new Set(["short_interval", "medium_interval", "long_interval"]);
 let recentPage = 0;
@@ -423,7 +419,7 @@ function getWeeklyMetric() {
 
 function getPredictionMode() {
   const selected = document.querySelector('input[name="predictionMode"]:checked')?.value;
-  return selected === "hrAdjusted" ? "hrAdjusted" : "pace";
+  return selected === "pace" ? "pace" : "hrAdjusted";
 }
 
 function getIntervalPaceMode() {
@@ -1093,196 +1089,90 @@ function intervalTargetsFrom5k(raceSeconds) {
   };
 }
 
-function predicted5kPace(row, mode = getPredictionMode(), options = {}, model = null) {
-  if (mode === "hrAdjusted") {
-    return intensityNormalizedPace(row, model, options);
+// Trials are processed in time order. Each freezes a reference effort and pace;
+// future workouts and later trials cannot change an earlier prediction.
+function trialAnchoredPredictions(records, calibrationRecords, mode, options, interval) {
+  const groups = interval ? ["short_interval", "medium_interval", "long_interval"] : ["easy"];
+  const history = Object.fromEntries(groups.map(key => [key, []]));
+  const selected = new Set(records.map(row => String(row.id)));
+  const windowSize = interval ? 3 : 10, minimum = interval ? 1 : 4;
+  const normalized = mode === "hrAdjusted";
+  const positive = value => value != null && Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
+  const dayOf = row => Date.parse(row.date + "T00:00:00Z") / DAY_MS;
+  const recent = (key, day, days = 21) => history[key].filter(row => day >= row.day && day - row.day <= days);
+  const paceAtReference = (row, model) => {
+    if (!normalized || model.hr == null) return row.pace;
+    if (row.hr == null || Math.abs(row.hr - model.hr) > 15) return null;
+    return row.pace * Math.exp(model.beta * (row.hr - model.hr));
+  };
+  const baseline = (key, day) => {
+    const near = recent(key, day).slice(-windowSize);
+    if (near.length < minimum) return null;
+    const reference = median(near.map(row => row.hr).filter(value => value != null));
+    const usable = recent(key, day, 90).filter(row => row.hr != null), slopes = [];
+    for (let i = 1; i < usable.length; i++) {
+      const a = usable[i - 1], b = usable[i], delta = b.hr - a.hr;
+      if (b.day - a.day <= 21 && Math.abs(delta) >= 3) {
+        const slope = Math.log(a.pace / b.pace) / delta;
+        if (slope >= .001 && slope <= .03) slopes.push(slope);
+      }
+    }
+    const prior = interval ? .0075 : .01, weight = slopes.length / (slopes.length + 8);
+    const model = {hr: reference, beta: prior * (1 - weight) + (median(slopes) ?? prior) * weight};
+    const values = near.map(row => paceAtReference(row, model)).filter(value => value != null);
+    return values.length >= minimum ? {...model, pace: median(values)} : null;
+  };
+  let models = {}, anchor = null, anchorSeconds = null, calibrations = 0;
+  const output = [];
+  const point = (row, value, count, hrNormalized) => ({
+    date: row.date, datetime: row.datetime, value, mode, count, hrNormalized,
+    calibrationCount: calibrations, anchorDate: anchor.date, anchorSeconds,
+    anchorAgeDays: dayOf(row) - dayOf(anchor), sources: Object.keys(models).map(key => DATA.labels[key] ?? key).join(", ") || "measured trial benchmark"
+  });
+  const context = [...calibrationRecords].sort((a, b) => a.datetime.localeCompare(b.datetime)
+    || Number(b.category === "5k_time_trial") - Number(a.category === "5k_time_trial")
+    || String(a.id).localeCompare(String(b.id)));
+  for (const row of context) {
+    const day = dayOf(row); let next = null;
+    if (row.category === "5k_time_trial" && row.fastest5kSec) {
+      const seconds = positive(adjustedTrialTime(row, options));
+      if (seconds != null) {
+        models = Object.fromEntries(groups.map(key => [key, baseline(key, day)]).filter(([, model]) => model != null));
+        anchor = row; anchorSeconds = seconds;
+        if (Object.keys(models).length) {
+          calibrations++;
+          next = point(row, seconds, Object.keys(models).reduce((sum, key) => sum + recent(key, day).slice(-windowSize).length, 0),
+            normalized && Object.values(models).every(model => model.hr != null));
+        } else if (interval) {calibrations++;next = point(row, seconds, 0, false);}
+      }
+    } else if (interval ? groups.includes(row.category)
+      : ["easy", "easy_long"].includes(row.category) && row.type === "running") {
+      const pace = positive(interval ? adjustedIntervalPace(row, options) : adjustedPaceForRow(row, row.paceSecPerMile, options));
+      if (pace != null) {
+        const key = interval ? row.category : "easy";
+        let hr = positive(interval ? row.intervalAvgHr : row.avgHr);
+        if (hr != null && (hr < 60 || hr > 220)) hr = null;
+        history[key].push({day, pace, hr});history[key] = recent(key, day, 90);
+        const ratios = []; let count = 0, complete = true;
+        for (const [group, model] of Object.entries(models)) {
+          const values = recent(group, day).slice(-windowSize).map(item => paceAtReference(item, model)).filter(value => value != null);
+          if (values.length < minimum) continue;
+          ratios.push(Math.log(median(values) / model.pace));count += values.length;complete = complete && model.hr != null;
+        }
+        if (ratios.length) next = point(row, anchorSeconds * Math.exp(mean(ratios)), count, normalized && complete);
+      }
+    }
+    if (next && selected.has(String(row.id))) output.push(next);
   }
-  return adjustedIntervalPace(row, options);
-}
-
-function buildRawPredicted5kSeries(records, mode = getPredictionMode(), options = {}) {
-  const intervals = records
-    .filter((row) =>
-      ["short_interval", "medium_interval", "long_interval"].includes(row.category) &&
-      row.intervalPaceSecPerMile
-    )
-    .sort((a, b) => a.datetime.localeCompare(b.datetime));
-  const recent = {
-    short_interval: [],
-    medium_interval: [],
-    long_interval: []
-  };
-  const series = [];
-  let previous = null;
-  const intensityModel = mode === "hrAdjusted" ? buildIntensityModel(intervals, options) : null;
-
-  intervals.forEach((row) => {
-    if (previous) {
-      const gapDays = (parseDate(row.date).getTime() - parseDate(previous.date).getTime()) / (24 * 60 * 60 * 1000);
-      if (gapDays > INTERVAL_LINE_GAP_DAYS) {
-        Object.keys(recent).forEach((key) => {
-          recent[key] = [];
-        });
-      }
-    }
-
-    const predictionPace = predicted5kPace(row, mode, options, intensityModel);
-    if (predictionPace == null) {
-      previous = row;
-      return;
-    }
-
-    recent[row.category].push(predictionPace);
-    recent[row.category] = recent[row.category].slice(-3);
-
-    const available = Object.entries(recent)
-      .filter(([, values]) => values.length)
-      .map(([category, values]) => ({
-        category,
-        value: mean(values)
-      }));
-    if (available.length) {
-      const pace = mean(available.map((item) => item.value));
-      series.push({
-        date: row.date,
-        value: pace * FIVE_K_MILES,
-        mode,
-        sources: available.map((item) => DATA.labels[item.category]).join(", ")
-      });
-    }
-
-    previous = row;
-  });
-
-  return series;
-}
-
-function predictionCalibration(records, mode = getPredictionMode(), options = {}) {
-  const rawSeries = buildRawPredicted5kSeries(records, mode, options);
-  const trials = records
-    .filter((row) => row.category === "5k_time_trial" && row.fastest5kSec)
-    .sort((a, b) => a.datetime.localeCompare(b.datetime));
-  const ratios = [];
-
-  trials.forEach((trial) => {
-    const trialTime = parseDate(trial.date).getTime();
-    const prior = rawSeries
-      .filter((row) => {
-        const rowTime = parseDate(row.date).getTime();
-        const daysBefore = (trialTime - rowTime) / (24 * 60 * 60 * 1000);
-        return daysBefore >= 0 && daysBefore <= PREDICTION_CALIBRATION_LOOKBACK_DAYS;
-      })
-      .at(-1);
-
-    if (prior && prior.value > 0) {
-      const trialTime = adjustedTrialTime(trial, options);
-      if (trialTime) {
-        ratios.push(trialTime / prior.value);
-      }
-    }
-  });
-
-  const ratio = median(ratios);
-  return {
-    ratio: ratio ? clamp(ratio, 0.75, 1.05) : 1,
-    count: ratios.length
-  };
+  return output;
 }
 
 function buildPredicted5kSeries(records, calibrationRecords = DATA.records, mode = getPredictionMode(), options = {}) {
-  const calibration = predictionCalibration(calibrationRecords, mode, options);
-  return buildRawPredicted5kSeries(records, mode, options).map((row) => ({
-    ...row,
-    rawValue: row.value,
-    value: row.value * calibration.ratio,
-    calibrationRatio: calibration.ratio,
-    calibrationCount: calibration.count
-  }));
-}
-
-function buildRawEasyPredicted5kSeries(records, mode = getPredictionMode(), options = {}) {
-  const easy = outdoorEasyPredictionRows(records, mode === "hrAdjusted");
-  const intensityModel = mode === "hrAdjusted" ? buildEasyIntensityModel(easy, options) : null;
-  const series = [];
-  let recentPaces = [];
-  let previous = null;
-
-  easy.forEach((row) => {
-    if (previous) {
-      const gapDays = (parseDate(row.date).getTime() - parseDate(previous.date).getTime()) / DAY_MS;
-      if (gapDays > EASY_PACE_RANGE_GAP_DAYS) {
-        recentPaces = [];
-      }
-    }
-
-    const pace = mode === "hrAdjusted"
-      ? intensityNormalizedEasyPace(row, intensityModel, options)
-      : adjustedPaceForRow(row, row.paceSecPerMile, options);
-    if (Number.isFinite(pace)) {
-      recentPaces.push(pace);
-      recentPaces = recentPaces.slice(-EASY_PACE_RANGE_WINDOW);
-      if (recentPaces.length >= EASY_PACE_RANGE_MIN_POINTS) {
-        const rollingPace = median(recentPaces);
-        series.push({
-          date: row.date,
-          datetime: row.datetime,
-          value: rollingPace * FIVE_K_MILES,
-          easyPaceSecPerMile: rollingPace,
-          count: recentPaces.length,
-          mode
-        });
-      }
-    }
-    previous = row;
-  });
-
-  return series;
-}
-
-function easyPredictionCalibration(records, mode = getPredictionMode(), options = {}) {
-  const rawSeries = buildRawEasyPredicted5kSeries(records, mode, options);
-  const trials = records
-    .filter((row) => row.category === "5k_time_trial" && row.fastest5kSec)
-    .sort((a, b) => a.datetime.localeCompare(b.datetime));
-  const ratios = [];
-
-  trials.forEach((trial) => {
-    const trialTime = parseDate(trial.date).getTime();
-    const prior = rawSeries
-      .filter((row) => {
-        const rowTime = parseDate(row.date).getTime();
-        const daysBefore = (trialTime - rowTime) / DAY_MS;
-        return row.datetime <= trial.datetime &&
-          daysBefore >= 0 && daysBefore <= PREDICTION_CALIBRATION_LOOKBACK_DAYS;
-      })
-      .at(-1);
-    const actualTime = adjustedTrialTime(trial, options);
-
-    if (prior?.value > 0 && actualTime) {
-      ratios.push(actualTime / prior.value);
-    }
-  });
-
-  const ratio = median(ratios);
-  return {
-    ratio: ratios.length >= EASY_5K_MIN_CALIBRATIONS && ratio
-      ? clamp(ratio, EASY_5K_CALIBRATION_MIN, EASY_5K_CALIBRATION_MAX)
-      : null,
-    count: ratios.length
-  };
+  return trialAnchoredPredictions(records, calibrationRecords, mode, options, true);
 }
 
 function buildEasyPredicted5kSeries(records, calibrationRecords = DATA.records, mode = getPredictionMode(), options = {}) {
-  const calibration = easyPredictionCalibration(calibrationRecords, mode, options);
-  if (!calibration.ratio) return [];
-
-  return buildRawEasyPredicted5kSeries(records, mode, options).map((row) => ({
-    ...row,
-    rawValue: row.value,
-    value: row.value * calibration.ratio,
-    calibrationRatio: calibration.ratio,
-    calibrationCount: calibration.count
-  }));
+  return trialAnchoredPredictions(records, calibrationRecords, mode, options, false);
 }
 
 function latest5kTrial(records = DATA.records) {
@@ -1322,7 +1212,7 @@ function selectedTargetBasis() {
       source,
       seconds: prediction.value,
       label: `Predicted 5K (${predictionModeLabel(mode)})`,
-      detail: `${formatDuration(prediction.value)} calibrated from ${prediction.calibrationCount} trials`
+      detail: `${formatDuration(prediction.value)} · anchored to ${formatDate(prediction.anchorDate)}${prediction.anchorAgeDays > 90 ? ` · ${prediction.anchorAgeDays} days old` : ""}${prediction.count === 0 ? " · trial benchmark; no workout baseline" : ""}`
     };
   }
 
@@ -2475,7 +2365,7 @@ function renderTrialChart(records) {
       opacity: "0.72"
     });
     intervalGroup.appendChild(dot);
-    addSvgHover(intervalGroup, dot, "circle", { cx, cy, r: 12 }, `${formatDate(row.date)} interval prediction (${predictionModeLabel(mode)}): ${formatDuration(row.value)} from ${row.sources}; calibrated from ${row.calibrationCount} trials (${formatNumber(row.calibrationRatio, 3)}x)`);
+    addSvgHover(intervalGroup, dot, "circle", { cx, cy, r: 12 }, `${formatDate(row.date)} interval prediction (${predictionModeLabel(mode)}): ${formatDuration(row.value)} from ${row.sources}; anchored to ${formatDate(row.anchorDate)} (${formatDuration(row.anchorSeconds)})`);
   });
 
   const easyGroup = svgEl("g", { "data-trial-series": "easy" });
@@ -2506,7 +2396,7 @@ function renderTrialChart(records) {
       opacity: "0.64"
     });
     easyGroup.appendChild(dot);
-    addSvgHover(easyGroup, dot, "circle", { cx, cy, r: 12 }, `${formatDate(row.date)} outdoor easy-speed prediction (${predictionModeLabel(mode)}): ${formatDuration(row.value)} from a ${formatPace(row.easyPaceSecPerMile)} rolling median across ${row.count} runs; calibrated from ${row.calibrationCount} trials (${formatNumber(row.calibrationRatio, 3)}x)`);
+    addSvgHover(easyGroup, dot, "circle", { cx, cy, r: 12 }, `${formatDate(row.date)} outdoor easy-speed prediction (${predictionModeLabel(mode)}): ${formatDuration(row.value)} from ${row.count} recent runs; anchored to ${formatDate(row.anchorDate)} (${formatDuration(row.anchorSeconds)})`);
   });
 
   const actualGroup = svgEl("g", { "data-trial-series": "actual" });

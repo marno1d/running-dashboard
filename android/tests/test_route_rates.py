@@ -84,6 +84,12 @@ class AverageTargetsTest(unittest.TestCase):
         before=self.session.cache.db.total_changes
         self.assertEqual(self.targets()['route_name'],'Liberty Park')
         self.assertEqual(self.session.cache.db.total_changes,before)
+    def test_saved_route_surface_owns_the_plan_even_with_a_manual_trail_choice(self):
+        target=self.targets(target_surface='trail')
+        self.assertEqual(target['route_surface'],'road')
+        self.assertTrue(all(p['surface']=='road' for p in target['route_plans']))
+        easy=next(p for p in target['route_plans'] if p['kind']=='easy')
+        self.assertAlmostEqual(easy['phases'][0]['base_pace'],target['nsm_easy']['base_pace'])
     def test_manual_easy_and_easy_long_have_separate_road_and_trail_plans(self):
         targets=self.targets(target_route_id='')
         easy=[p for p in targets['route_plans'] if p['kind'] in ('easy','easy_long')]

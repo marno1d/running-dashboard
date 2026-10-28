@@ -76,8 +76,7 @@ public final class MainActivity extends Activity {
     private EditText raceDistanceField;
     private TextView customRacePace,customRaceTime;
     private TextView workoutConditionsSummary;
-    private LinearLayout selectedRouteRow;
-    private TextView selectedRouteLabel;
+    private Button trailConditionButton,routeConditionButton,weatherClearButton,routeClearButton;
     private TextView elevationMigrationNote;
     private boolean refreshingRouteRates;
     private RouteScanFeedback activeRouteScan;
@@ -112,10 +111,12 @@ public final class MainActivity extends Activity {
             JSONObject state=new JSONObject(preferences.getString("settings","{}"));
             JSONObject defaults=new JSONObject()
                 .put("target_prediction_adjust_elevation",true).put("target_prediction_adjust_temperature",true)
-                .put("target_prediction_mode",state.optString("prediction_mode","observed"))
+                .put("target_prediction_mode","intensity")
                 .put("target_trial_adjust_elevation",state.optBoolean("adjust_elevation",false))
                 .put("target_trial_adjust_temperature",state.optBoolean("adjust_temperature",false));
-            boolean changed=false;java.util.Iterator<String> keys=defaults.keys();
+            boolean changed=false;
+            if(state.optInt("prediction_fit_version",0)<2){state.put("prediction_fit_version",2).put("prediction_mode","intensity").put("target_prediction_mode","intensity");changed=true;}
+            java.util.Iterator<String> keys=defaults.keys();
             while(keys.hasNext()){String key=keys.next();if(!state.has(key)){state.put(key,defaults.get(key));changed=true;}}
             if(!state.has("target_gain_per_mile")){
                 state.put("target_gain_per_mile","0").put("target_loss_per_mile","0");changed=true;
@@ -722,11 +723,11 @@ public final class MainActivity extends Activity {
         refresh.run();panel.addView(row,new LinearLayout.LayoutParams(-1,-2));
     }
     private void predictionOptions(){
-        LinearLayout body=section();RadioGroup mode=chartChoices(body,"Compare pace",new String[]{"Recorded effort","HR-adjusted effort"},"intensity".equals(setting("prediction_mode","observed"))?1:0);
+        LinearLayout body=section();RadioGroup mode=chartChoices(body,"Compare pace",new String[]{"Recorded effort","HR-adjusted effort"},"intensity".equals(setting("prediction_mode","intensity"))?1:0);
         addText(body,"Visible series",14,ink,true,16);String[] keys={"trial_points","prediction_points","easy_prediction_points"},labels={"Measured 5K","Interval estimate","Easy estimate"};
         CheckBox[] choices=new CheckBox[keys.length];
         for(int i=0;i<keys.length;i++){CheckBox choice=new CheckBox(this);choice.setText(labels[i]);choice.setTextSize(15);choice.setTextColor(ink);choice.setMinHeight(dp(48));choice.setChecked(preferences.getBoolean("show_"+keys[i],true));body.addView(choice,new LinearLayout.LayoutParams(-1,-2));choices[i]=choice;}
-        addText(body,"Measured points come from recorded 5K efforts. Dashed lines are calibrated estimates. Easy estimates need at least two nearby trials. Missing condition data stays unadjusted.",14,muted,false,12);
+        addText(body,"Measured points come from recorded 5K efforts. Dashed lines follow the latest measured trial using comparable workouts. HR reference effort is fixed at each trial. Easy estimates need four nearby road easy runs. Earlier estimates use only information available then. Missing condition data stays unadjusted.",14,muted,false,12);
         bottomSheet("5K chart settings",body,"Apply",dialog->{
             for(int i=0;i<keys.length;i++)preferences.edit().putBoolean("show_"+keys[i],choices[i].isChecked()).apply();
             saveSetting("prediction_mode",checkedChoice(mode)==1?"intensity":"observed");dialog.dismiss();loadDashboard(false);
@@ -755,7 +756,7 @@ public final class MainActivity extends Activity {
         if(estimate!=null){addText(panel,raceTime(estimate.optDouble("duration")),32,ink,false,8);addText(panel,"Latest interval estimate · "+estimate.optString("date"),13,muted,false,2);}
         JSONArray points=new JSONArray();String[] keys={"trial_points","prediction_points","easy_prediction_points"};
         for(String key:keys){JSONArray source=dashboardData.optJSONArray(key);if(source!=null)for(int j=0;j<source.length();j++)points.put(source.optJSONObject(j));}
-        addText(panel,"Dashed lines are estimates · "+adjustmentLabel()+("intensity".equals(setting("prediction_mode","observed"))?" · HR-adjusted effort":""),12,muted,false,4);
+        addText(panel,"Dashed lines are estimates · "+adjustmentLabel()+("intensity".equals(setting("prediction_mode","intensity"))?" · HR-adjusted effort":""),12,muted,false,4);
         addInteractivePlot(panel,"5K performance",points,null,null,Double.NaN,true,false,ChartSeries.PREDICTION,false);
     }
     private void heartCard(){
@@ -1475,7 +1476,9 @@ public final class MainActivity extends Activity {
         LinearLayout body=section();TextView status=addText(body,"",13,muted,false,0);LinearLayout controls=section();body.addView(controls);
         Dialog sheet=bottomSheet("Routes",body,null,null);
         trainingRouteRequest(sheet,status,controls,()->invoke("route_book",settings().toString()),result->{
-            controls.removeAllViews();if(savedTrainingRoutes.length()==0)addText(controls,"No routes saved. Add one in Manage routes.",14,muted,false,8);for(int i=0;i<savedTrainingRoutes.length();i++){
+            controls.removeAllViews();
+            if(!setting("target_route_id","").isEmpty())button(controls,"Clear route · manual conditions",false,()->{sheet.dismiss();clearRouteConditions();});
+            if(savedTrainingRoutes.length()==0)addText(controls,"No routes saved. Add one in Manage routes.",14,muted,false,8);for(int i=0;i<savedTrainingRoutes.length();i++){
                 JSONObject route=savedTrainingRoutes.optJSONObject(i),ref=route.optJSONObject("reference");String id=route.optString("id");boolean ready=ref!=null&&!ref.optBoolean("stale")&&route.optBoolean("profile_ready");
                 button(controls,route.optString("name")+"\n"+routeShapeLabel(route.optString("shape"))+" · "+route.optString("surface")+(ready?"":ref!=null&&!ref.optBoolean("stale")?" · Sync terrain →":" · Choose reference →"),false,()->{
                     if(!ready){sheet.dismiss();showTrainingRouteConfig(id);return;}
@@ -1503,7 +1506,7 @@ public final class MainActivity extends Activity {
     }
     private void clearTrainingRouteSelection(){
         if(elevationMigrationNote!=null)elevationMigrationNote.setVisibility(View.GONE);
-        try{JSONObject state=settings();for(String key:new String[]{"target_route_id","target_route_name","target_route_reference","target_interval_rates","target_legacy_elevation","target_route_engine","target_route_surface","target_route_shape","target_route_source"})state.remove(key);preferences.edit().putString("settings",state.toString()).apply();updateRouteConditionControls();updateWorkoutConditionsSummary(null);}catch(Exception ignored){}
+        try{JSONObject state=settings();state.put("target_surface",targetSurface());for(String key:new String[]{"target_route_id","target_route_name","target_route_reference","target_interval_rates","target_legacy_elevation","target_route_engine","target_route_surface","target_route_shape","target_route_source"})state.remove(key);preferences.edit().putString("settings",state.toString()).apply();updateRouteConditionControls();updateWorkoutConditionsSummary(null);}catch(Exception ignored){}
     }
     private void refreshActiveTrainingRoute(){
         String id=setting("target_route_id","");if(id.isEmpty()||refreshingRouteRates)return;refreshingRouteRates=true;
@@ -1519,13 +1522,13 @@ public final class MainActivity extends Activity {
         if(!setting("target_route_id","").isEmpty()){
             if(targets!=null&&targets.has("route_gain_per_mile")&&!targets.has("route_error")){
                 String gain=TargetConditions.canonical(2,Double.toString(targets.optDouble("route_gain_per_mile"))),loss=TargetConditions.canonical(3,Double.toString(targets.optDouble("route_loss_per_mile")));
-                try{JSONObject state=settings();state.put("target_gain_per_mile",gain).put("target_loss_per_mile",loss).put("target_route_engine",4);preferences.edit().putString("settings",state.toString()).apply();}catch(Exception ignored){}
+                try{JSONObject state=settings();state.put("target_gain_per_mile",gain).put("target_loss_per_mile",loss).put("target_route_engine",4).put("target_route_surface",targets.optString("route_surface",setting("target_route_surface","road")));preferences.edit().putString("settings",state.toString()).apply();}catch(Exception ignored){}
                 if(conditionsFields!=null&&conditionsFields[0].isAttachedToWindow()){
                     bindingConditions=true;try{conditionsFields[2].setText(gain);conditionsFields[3].setText(loss);}finally{bindingConditions=false;}
                 }
             }
             updateRouteConditionControls();
-            workoutConditionsSummary.setText(targets!=null&&targets.has("route_error")?targets.optString("route_error"):"Route averages · paces follow the terrain along each workout");return;
+            workoutConditionsSummary.setText(setting("target_route_name","Route")+" · "+(targets!=null&&targets.has("route_error")?targets.optString("route_error"):"Elevation and Trail set by route"));return;
         }
         JSONObject workout=targets==null?null:targets.optJSONObject("workout");
         if(workout==null){workoutConditionsSummary.setText("Elevation is feet per mile; each prediction scales to its own distance.");return;}
@@ -1557,7 +1560,7 @@ public final class MainActivity extends Activity {
             }
             JSONArray splits=plan.optJSONArray("splits");
             if(splits!=null&&splits.length()>0){
-                addText(body,"Mile splits · 128 bpm",15,ink,true,14);
+                addText(body,"Mile splits · NSM easy",15,ink,true,14);
                 for(int i=0;i<splits.length();i++){
                     JSONObject split=splits.optJSONObject(i);String label="Mile "+split.optInt("index")+(split.optBoolean("partial")?" · final partial mile":"");
                     stepViews.add(workoutDetailRow(body,label,split));
@@ -1565,7 +1568,7 @@ public final class MainActivity extends Activity {
             }else{
                 JSONArray phases=plan.optJSONArray("phases");if(phases!=null)for(int i=0;i<phases.length();i++){
                     JSONObject phase=phases.optJSONObject(i);String kind=phase.optString("kind");if(kind.equals("walk")){stepViews.add(null);continue;}
-                    String label=kind.equals("warmup")?"Warm-up · 128 bpm":kind.equals("cooldown")?"Cooldown · 128 bpm":kind.equals("work")?"Rep "+phase.optInt("rep"):"Easy · 128 bpm";
+                    String label=kind.equals("warmup")?"Warm-up · easy":kind.equals("cooldown")?"Cooldown · easy":kind.equals("work")?"Rep "+phase.optInt("rep"):"Easy · NSM";
                     stepViews.add(workoutDetailRow(body,label,phase));
                 }
                 if(intervals)addText(body,"Totals include recoveries.",12,muted,false,12);
@@ -1607,18 +1610,6 @@ public final class MainActivity extends Activity {
         line.addView(text(paceValue(pace)+(miles?" /mi":" /km"),18,ink,true));block.addView(line);
         addText(block,raceTime(seconds)+String.format(Locale.getDefault()," · %.2f %s · +%.0f / −%.0f ft",distance/(miles?1609.344:1000),miles?"mi":"km",row.optDouble("gain"),row.optDouble("loss")),12,muted,false,2);body.addView(block);block.setContentDescription(label);return block;
     }
-    private void renderRouteEasyTargets(JSONObject targets,LinearLayout panel){
-        addText(panel,"Easy pace · 128 bpm · "+targets.optString("route_surface"),16,ink,true,0);
-        if(targets.has("route_error")){addText(panel,targets.optString("route_error"),13,muted,false,8);return;}
-        for(String kind:new String[]{"easy","easy_long"}){
-            JSONObject plan=routePlan(targets,kind);if(plan==null)continue;
-            LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER_VERTICAL);line.setPadding(0,dp(8),0,0);
-            line.addView(text(routeKindLabel(kind)+" · "+setting(kind.equals("easy")?"target_easy_minutes":"target_easy_long_minutes",kind.equals("easy")?"45":"80")+" min",14,ink,false),new LinearLayout.LayoutParams(0,-2,1));
-            line.addView(text(plan.has("error")?"—":easyPace(plan.optDouble("pace"))+(miles?" /mi":" /km"),20,ink,true));panel.addView(line);
-            addText(panel,plan.has("error")?plan.optString("error"):String.format(Locale.getDefault(),"%.1f %s · +%.0f / −%.0f ft",plan.optDouble("distance")/(miles?1609.344:1000),miles?"mi":"km",plan.optDouble("gain"),plan.optDouble("loss"))+(plan.optBoolean("extrapolated")?" · extrapolated":""),11,muted,false,2);
-            line.setOnClickListener(view->showRoutePlan(routeKindLabel(kind),plan));
-        }
-    }
     private String targetBasisPrefix(String source){return source.equals("predicted")?"target_prediction_":"target_trial_";}
     private boolean targetAdjusted(String source,String key){return "true".equals(setting(targetBasisPrefix(source)+key,source.equals("predicted")?"true":"false"));}
     private void applyTargetAdjustments(String source,boolean elevation,boolean weather){
@@ -1642,7 +1633,7 @@ public final class MainActivity extends Activity {
         MaterialUi.ButtonGroup controls=new MaterialUi.ButtonGroup(this,false);controls.setPadding(0,dp(6),0,0);
         controls.addView(adjustmentControl(elevation,weather,()->applyTargetAdjustments(source,!both,!both),()->editTargetAdjustments(source)));
         if(source.equals("predicted")){
-            boolean normalized="intensity".equals(setting("target_prediction_mode","observed"));
+            boolean normalized="intensity".equals(setting("target_prediction_mode","intensity"));
             Button hr=chipButton("HR · "+(normalized?"On":"Off"),normalized,()->{saveSetting("target_prediction_mode",normalized?"observed":"intensity");loadDashboard(false);});
             hr.setPadding(dp(10),dp(8),dp(10),dp(8));hr.setEnabled(!busy);
             hr.setContentDescription("HR normalization. "+(normalized?"On. Turn off.":"Off. Turn on."));hr.setTooltipText("Heart-rate normalization for the 5K estimate");
@@ -1674,10 +1665,16 @@ public final class MainActivity extends Activity {
         if(!source.equals("custom")){
             boolean elevation=valid?targets.optBoolean("basis_adjust_elevation"):targetAdjusted(source,"adjust_elevation");
             boolean weather=valid?targets.optBoolean("basis_adjust_temperature"):targetAdjusted(source,"adjust_temperature");
-            boolean hr="intensity".equals(valid?targets.optString("basis_prediction_mode"):setting("target_prediction_mode","observed"));
+            boolean hr="intensity".equals(valid?targets.optString("basis_prediction_mode"):setting("target_prediction_mode","intensity"));
             String description=elevation?(weather?"Elevation + weather adjusted":"Elevation adjusted"):(weather?"Weather adjusted":"Unadjusted");
             if(source.equals("predicted"))description+=" · "+(hr?"HR normalized":"HR off");
             if(valid&&targets.has("basis_date"))description+=" · "+sessionCardDate(targets.optString("basis_date"));
+            if(valid&&source.equals("predicted")&&targets.has("anchor_date")){
+                description+=" · Trial "+sessionCardDate(targets.optString("anchor_date"));
+                if(targets.optInt("anchor_age_days")>90)description+=" · "+targets.optInt("anchor_age_days")+" days old";
+                if(targets.optInt("samples",1)==0)description+=" · Trial benchmark; needs workout baseline";
+                else if(hr&&!targets.optBoolean("hr_normalized",true))description+=" · HR unavailable: pace only";
+            }
             addText(basis,description,12,muted,false,6);
             targetBasisControls(basis,source);
         }
@@ -1749,56 +1746,68 @@ public final class MainActivity extends Activity {
         return cell;
     }
     private void renderEasyTargets(JSONObject targets){
-        boolean selected=!setting("target_route_id","").isEmpty();String selectedSurface=targets==null?setting("target_route_surface","road"):targets.optString("route_surface",setting("target_route_surface","road"));
+        boolean selected=!setting("target_route_id","").isEmpty();String selectedSurface=selected&&targets!=null?targets.optString("route_surface",targetSurface()):targetSurface();
         for(String kind:new String[]{"easy","easy_long"}){
-            LinearLayout panel=card(targetPaceResults);panel.setPadding(dp(12),dp(10),dp(12),dp(10));
             String name=kind.equals("easy")?"Easy":"Easy Long",minutes=setting(kind.equals("easy")?"target_easy_minutes":"target_easy_long_minutes",kind.equals("easy")?"45":"80");
-            addText(panel,name+" · "+minutes+" min · 128 bpm",16,ink,true,0);
+            LinearLayout panel=card(targetPaceResults);panel.setPadding(dp(12),dp(10),dp(12),dp(10));
+            addText(panel,name+" · "+minutes+" min · NSM",16,ink,true,0);
+            JSONObject book=targets==null?null:targets.optJSONObject("nsm_easy");
+            if(book==null||book.has("error")){
+                addText(panel,book!=null?book.optString("error"):"Choose a 5K basis for your easy pace.",12,muted,false,6);continue;
+            }
+            addText(panel,"70% of 5K speed · flat / cool: "+paceValue(book.optDouble("base_pace"))+(miles?" /mi":" /km"),11,muted,false,3);
             if(selected&&targets!=null&&targets.has("route_error")){addText(panel,targets.optString("route_error"),13,muted,false,6);continue;}
-            for(String surface:selected?new String[]{selectedSurface}:new String[]{"road","trail"}){
+            JSONArray estimates=targets==null?null:targets.optJSONArray("easy");
+            for(String surface:new String[]{selectedSurface}){
+                JSONObject estimate=null;if(estimates!=null)for(int i=0;i<estimates.length();i++){JSONObject entry=estimates.optJSONObject(i);if(entry!=null&&surface.equals(entry.optString("surface")))estimate=entry;}
                 JSONObject plan=routePlan(targets,kind,surface);
                 boolean available=plan!=null&&!plan.has("error")&&Double.isFinite(plan.optDouble("pace",Double.NaN));
-                LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER_VERTICAL);line.setPadding(0,dp(8),0,dp(4));line.setMinimumHeight(dp(48));
-                line.addView(text(surface.equals("trail")?"Trail":"Road",14,ink,false),new LinearLayout.LayoutParams(0,-2,1));
+                LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER_VERTICAL);line.setPadding(0,dp(6),0,dp(2));line.setMinimumHeight(dp(48));
+                line.addView(text(surface.equals("trail")?"Trail · estimated":"Road",14,ink,false),new LinearLayout.LayoutParams(0,-2,1));
                 String pace=available?paceValue(plan.optDouble("pace"))+(miles?" /mi":" /km"):"—";
                 line.addView(text(pace,22,ink,true));panel.addView(line);
-                if(available)addText(panel,String.format(Locale.getDefault(),"%.2f %s · +%.0f / −%.0f ft · Average pace",plan.optDouble("distance")/(miles?1609.344:1000),miles?"mi":"km",plan.optDouble("gain"),plan.optDouble("loss"))+(plan.optBoolean("extrapolated")?" · estimated beyond reference":""),11,muted,false,0);
-                else addText(panel,plan==null?"Sync recent easy runs with pace and HR.":plan.optString("error"),12,muted,false,0);
+                if(available)addText(panel,String.format(Locale.getDefault(),"%.2f %s · +%.0f / −%.0f ft · Tap for splits",plan.optDouble("distance")/(miles?1609.344:1000),miles?"mi":"km",plan.optDouble("gain"),plan.optDouble("loss"))+(plan.optBoolean("extrapolated")?" · beyond reference":""),11,muted,false,0);
+                else addText(panel,plan==null?"Choose a 5K basis to calculate your easy pace.":plan.optString("error"),12,muted,false,0);
+                if(surface.equals("trail")&&estimate!=null){
+                    String note=estimate.optString("surface_note");
+                    if("nsm_speed_trail_factor".equals(estimate.optString("method")))note=String.format(Locale.getDefault(),"+%.0f%% trail slowdown · %d recent trail runs · hills and weather applied separately",(estimate.optDouble("surface_factor",1)-1)*100,estimate.optInt("samples"));
+                    if(!note.isEmpty())addText(panel,note,11,muted,false,4);
+                }
                 if(plan!=null){line.setOnClickListener(view->showRoutePlan(name+" · "+surface,plan));line.setFocusable(true);line.setContentDescription(name+" "+surface+". Average pace "+pace+". Tap for mile splits.");}
                 if(selected&&plan!=null){panel.setOnClickListener(view->showRoutePlan(name,plan));panel.setFocusable(true);panel.setTooltipText("Mile splits");}
             }
         }
     }
-    private String easyPace(double pace){
-        double displayed=pace*(miles?1.609344:1);
-        return ScatterPlot.pace(Math.round(displayed/5)*5,false);
-    }
     private String raceTime(double value){long seconds=Math.round(value);return seconds>=3600?String.format(Locale.getDefault(),"%d:%02d:%02d",seconds/3600,seconds/60%60,seconds%60):ScatterPlot.pace(value,false);}
     private boolean validTargetTime(String value){
         try{String[] parts=value.split(":",-1);if(parts.length<2||parts.length>3)return false;long seconds=0;for(int i=0;i<parts.length;i++){if(!parts[i].matches("[0-9]+"))return false;int part=Integer.parseInt(parts[i]);if(i>0&&part>=60)return false;seconds=seconds*60+part;}return seconds>=300&&seconds<=7200;}catch(Exception e){return false;}
     }
+    private LinearLayout conditionAction(Button action,Button clear){
+        LinearLayout chip=new LinearLayout(this);chip.setGravity(Gravity.CENTER_VERTICAL);chip.setBackground(outlined(palette.surface,16));chip.setClipToOutline(true);
+        action.setTextSize(12);action.setPadding(dp(8),dp(6),dp(8),dp(6));action.setBackground(MaterialUi.ripple(this,Color.TRANSPARENT,16,palette.primary));
+        clear.setBackground(MaterialUi.ripple(this,Color.TRANSPARENT,16,palette.primary));
+        chip.addView(action,new LinearLayout.LayoutParams(-2,-2));chip.addView(clear,new LinearLayout.LayoutParams(dp(48),dp(48)));
+        return chip;
+    }
     private void renderTargetConditions(){
-        LinearLayout conditions=section();LinearLayout header=new LinearLayout(this);header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(text("Conditions",14,ink,true),new LinearLayout.LayoutParams(0,-2,1));
-        localWeatherButton=chipButton("Local weather",false,()->requestLocalWeather(true));localWeatherButton.setTextSize(12);localWeatherButton.setPadding(dp(8),dp(6),dp(8),dp(6));
+        LinearLayout conditions=section();addText(conditions,"Conditions",14,ink,true,0);
+        MaterialUi.ButtonGroup actions=new MaterialUi.ButtonGroup(this,false);actions.setPadding(0,dp(6),0,0);
+        localWeatherButton=chipButton("Weather",false,()->requestLocalWeather(true));
         localWeatherButton.setContentDescription("Use current local temperature and humidity. Refresh now, including during a manual override.");
         localWeatherButton.setTooltipText("Fill temperature and humidity using approximate location and Open-Meteo");
-        MaterialUi.ButtonGroup actions=new MaterialUi.ButtonGroup(this,false);actions.addView(localWeatherButton);
+        weatherClearButton=iconButton(MaterialUi.Icon.CLOSE,"Clear weather only; restore 45 degrees and blank humidity for one hour",this::clearWeatherConditions);
+        actions.addView(conditionAction(localWeatherButton,weatherClearButton));
+        routeConditionButton=chipButton("Routes",false,this::showTrainingRoutePicker);
+        routeClearButton=iconButton(MaterialUi.Icon.CLOSE,"Clear route, elevation and Trail; keep weather",this::clearRouteConditions);
+        actions.addView(conditionAction(routeConditionButton,routeClearButton));
+        Button reset=chipButton("Reset",false,this::resetTargetConditions);reset.setTextSize(12);reset.setPadding(dp(8),dp(6),dp(8),dp(6));
+        reset.setContentDescription("Reset all conditions: weather, route, elevation and Trail.");actions.addView(reset);
         weatherLocationSettingsButton=chipButton("Location settings",false,()->{
             weatherAfterLocationSettings=true;startActivity(new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS));
         });weatherLocationSettingsButton.setTextSize(12);weatherLocationSettingsButton.setPadding(dp(8),dp(6),dp(8),dp(6));
-        weatherLocationSettingsButton.setContentDescription("Open phone location settings, then retry local weather on return");weatherLocationSettingsButton.setVisibility(View.GONE);actions.addView(weatherLocationSettingsButton);
-        Button routes=chipButton("Routes",false,this::showTrainingRoutePicker);routes.setTextSize(12);routes.setPadding(dp(8),dp(6),dp(8),dp(6));actions.addView(routes);
-        Button reset=chipButton("Reset",false,this::resetTargetConditions);reset.setTextSize(12);reset.setPadding(dp(8),dp(6),dp(8),dp(6));
-        reset.setContentDescription("Reset weather and manual elevation to defaults. A selected route keeps its elevation. Keep weather defaults for one hour.");actions.addView(reset);
-        header.addView(actions,new LinearLayout.LayoutParams(0,-2,2));conditions.addView(header);
-        selectedRouteRow=new LinearLayout(this);selectedRouteRow.setGravity(Gravity.CENTER_VERTICAL);selectedRouteRow.setPadding(dp(10),0,0,0);selectedRouteRow.setBackground(shape(palette.primaryContainer,14));
-        selectedRouteLabel=text("",14,palette.onPrimaryContainer,true);selectedRouteLabel.setPadding(0,dp(10),dp(6),dp(10));selectedRouteLabel.setOnClickListener(view->showTrainingRoutePicker());
-        selectedRouteRow.addView(selectedRouteLabel,new LinearLayout.LayoutParams(0,-2,1));
-        selectedRouteRow.addView(iconButton(MaterialUi.Icon.CLOSE,"Clear selected route and enable manual elevation",()->{finishConditionEditing();clearTrainingRouteSelection();saveInlineConditions();}),new LinearLayout.LayoutParams(dp(48),dp(48)));
-        LinearLayout.LayoutParams routeLp=new LinearLayout.LayoutParams(-1,-2);routeLp.topMargin=dp(6);conditions.addView(selectedRouteRow,routeLp);
-        MaterialUi.MetricGroup fields=new MaterialUi.MetricGroup(this);fields.setPadding(0,dp(6),0,0);
-        conditionsFields=new EditText[4];String[] labels={"Temp °F","Humidity %","+ft/mi","−ft/mi"};
+        weatherLocationSettingsButton.setContentDescription("Open phone location settings, then retry local weather on return");weatherLocationSettingsButton.setVisibility(View.GONE);
+        MaterialUi.ConditionGroup fields=new MaterialUi.ConditionGroup(this);fields.setPadding(0,dp(6),0,0);
+        conditionsFields=new EditText[4];String[] labels={"Temp °F","RH %","+ft/mi","−ft/mi"};
         String[] descriptions={"Temperature in Fahrenheit","Humidity percent, optional","Elevation gain in feet per mile","Elevation loss in feet per mile"};
         for(int i=0;i<4;i++){
             final int index=i;LinearLayout column=section();TextView label=addText(column,labels[i],12,muted,false,0);
@@ -1809,7 +1818,7 @@ public final class MainActivity extends Activity {
                 }
             };field.setId(View.generateViewId());label.setLabelFor(field.getId());field.setSaveEnabled(false);
             field.setSingleLine(true);field.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL|(i==0?InputType.TYPE_NUMBER_FLAG_SIGNED:0));
-            field.setTextSize(16);field.setTextColor(ink);field.setHintTextColor(muted);field.setMinimumHeight(dp(48));field.setMinWidth(dp(64));field.setPadding(dp(8),dp(6),dp(8),dp(6));field.setBackground(inputBackground());
+            field.setTextSize(16);field.setTextColor(ink);field.setHintTextColor(muted);field.setMinimumHeight(dp(48));field.setMinWidth(dp(52));field.setMinimumWidth(dp(52));field.setPadding(dp(6),dp(6),dp(6),dp(6));field.setBackground(inputBackground());
             String saved=setting(TargetConditions.KEYS[i],TargetConditions.DEFAULTS[i]);field.setText(TargetConditions.valid(i,saved)?TargetConditions.canonical(i,saved):saved);field.setHint(i==1?"—":i>=2?"0.0":"0");field.setContentDescription(descriptions[i]);field.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
             LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(3);column.addView(field,lp);fields.addView(column);conditionsFields[i]=field;
             field.addTextChangedListener(new TextWatcher(){
@@ -1838,7 +1847,22 @@ public final class MainActivity extends Activity {
                 return false;
             });
         }
+        LinearLayout trailColumn=section();TextView trailLabel=addText(trailColumn,"Trail",12,muted,false,0);
+        trailConditionButton=actionButton("Off",false,()->{
+            if(!setting("target_route_id","").isEmpty())return;
+            finishConditionEditing();saveSetting("target_surface",targetSurface().equals("trail")?"road":"trail");updateRouteConditionControls();scheduleTargetRefresh();
+        });
+        trailConditionButton.setId(View.generateViewId());trailLabel.setLabelFor(trailConditionButton.getId());
+        trailConditionButton.setTextSize(16);trailConditionButton.setMinWidth(dp(52));trailConditionButton.setMinimumWidth(dp(52));trailConditionButton.setPadding(dp(6),dp(6),dp(6),dp(6));trailConditionButton.setGravity(Gravity.START|Gravity.CENTER_VERTICAL);
+        trailConditionButton.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));trailConditionButton.setBackground(inputBackground());
+        trailConditionButton.setAccessibilityDelegate(new View.AccessibilityDelegate(){
+            @Override public void onInitializeAccessibilityNodeInfo(View host,android.view.accessibility.AccessibilityNodeInfo info){
+                super.onInitializeAccessibilityNodeInfo(host,info);info.setClassName("android.widget.ToggleButton");info.setCheckable(true);info.setChecked(targetSurface().equals("trail"));
+            }
+        });
+        LinearLayout.LayoutParams trailLp=new LinearLayout.LayoutParams(-1,-2);trailLp.topMargin=dp(3);trailColumn.addView(trailConditionButton,trailLp);fields.addView(trailColumn);
         conditions.addView(fields,new LinearLayout.LayoutParams(-1,-2));
+        conditions.addView(actions,new LinearLayout.LayoutParams(-1,-2));conditions.addView(weatherLocationSettingsButton,new LinearLayout.LayoutParams(-2,-2));
         workoutConditionsSummary=addText(conditions,"",11,muted,false,4);
         String migration=setting("target_legacy_elevation","");elevationMigrationNote=addText(conditions,migration,12,muted,false,4);elevationMigrationNote.setVisibility(migration.isEmpty()?View.GONE:View.VISIBLE);
         conditionsStatus=addText(conditions,conditionsStatusText(),11,muted,false,4);
@@ -1846,10 +1870,25 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(10);content.addView(conditions,lp);
         updateRouteConditionControls();
     }
+    private String targetSurface(){
+        String value=setting(!setting("target_route_id","").isEmpty()?"target_route_surface":"target_surface","road");
+        return value.equals("trail")?"trail":"road";
+    }
     private void updateRouteConditionControls(){
         if(screen!=TARGETS||conditionsFields==null)return;
         boolean selected=!setting("target_route_id","").isEmpty();
-        if(selectedRouteRow!=null){selectedRouteRow.setVisibility(selected?View.VISIBLE:View.GONE);selectedRouteLabel.setText(setting("target_route_name","Route")+" · "+setting("target_route_surface","road"));selectedRouteLabel.setContentDescription("Selected route: "+setting("target_route_name","Route")+". Tap to change route.");}
+        if(routeConditionButton!=null){
+            routeConditionButton.setText("Routes");routeConditionButton.setEnabled(!busy);routeConditionButton.setTextColor(selected?palette.primary:muted);
+            routeConditionButton.setContentDescription(selected?"Selected route: "+setting("target_route_name","Route")+". Tap to change or clear route.":"Choose a route");
+        }
+        if(trailConditionButton!=null){
+            boolean trail=targetSurface().equals("trail");
+            trailConditionButton.setText(trail?"On":"Off");trailConditionButton.setSelected(trail);trailConditionButton.setEnabled(!busy&&!selected);trailConditionButton.setAlpha(selected?.6f:1f);
+            trailConditionButton.setTextColor(selected?muted:ink);trailConditionButton.setBackground(inputBackground());
+            String description="Trail surface "+(trail?"on":"off")+". "+(selected?"Set by the selected route. Clear the route to change.":"Tap to switch easy pace between road and trail.");
+            trailConditionButton.setContentDescription(description);trailConditionButton.setTooltipText(description);
+        }
+        if(routeClearButton!=null){routeClearButton.setVisibility(selected||targetSurface().equals("trail")||conditionChanged(2)||conditionChanged(3)?View.VISIBLE:View.GONE);routeClearButton.setEnabled(!busy);}
         for(int i=2;i<4;i++){
             EditText field=conditionsFields[i];if(field==null)continue;
             if(selected&&field.hasFocus())field.clearFocus();
@@ -1857,17 +1896,36 @@ public final class MainActivity extends Activity {
             field.setTextColor(selected?muted:ink);field.setAlpha(selected?.6f:1f);
         }
     }
-    private void resetTargetConditions(){
-        if(conditionsFields==null)return;
-        if(localWeather!=null)localWeather.cancel();weatherError=null;
-        boolean selected=!setting("target_route_id","").isEmpty();
-        preferences.edit().putLong("weather_manual_until",System.currentTimeMillis()+WeatherPolicy.HOUR).remove("weather_observed_at").apply();
-        bindingConditions=true;
-        try{for(int i=0;i<(selected?2:conditionsFields.length);i++){conditionsFields[i].setText(TargetConditions.DEFAULTS[i]);conditionsFields[i].setError(null);}}
-        finally{bindingConditions=false;}
-        root.requestFocus();((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(root.getWindowToken(),0);
-        saveInlineConditions();updateWeatherControls();
-        conditionsHandler.removeCallbacks(weatherAuto);conditionsHandler.postDelayed(weatherAuto,WeatherPolicy.HOUR);
+    private void clearWeatherConditions(){resetConditionGroups(true,false);}
+    private void clearRouteConditions(){resetConditionGroups(false,true);}
+    private void resetTargetConditions(){resetConditionGroups(true,true);}
+    private void resetConditionGroups(boolean weather,boolean route){
+        if(conditionsFields==null)return;finishConditionEditing();
+        try{
+            JSONObject state=settings();
+            for(int i=0;i<4;i++)if(i<2?weather:route)state.put(TargetConditions.KEYS[i],TargetConditions.DEFAULTS[i]);
+            if(route){
+                for(String key:new String[]{"target_route_id","target_route_name","target_route_reference","target_interval_rates","target_legacy_elevation","target_route_engine","target_route_surface","target_route_shape","target_route_source"})state.remove(key);
+                state.put("target_surface","road");if(elevationMigrationNote!=null)elevationMigrationNote.setVisibility(View.GONE);
+            }
+            android.content.SharedPreferences.Editor edit=preferences.edit().putString("settings",state.toString());
+            if(weather){
+                if(localWeather!=null)localWeather.cancel();weatherError=null;weatherAfterLocationSettings=false;weatherAfterPermission=false;weatherPermissionManual=false;
+                edit.putLong("weather_manual_until",System.currentTimeMillis()+WeatherPolicy.HOUR).remove("weather_observed_at");
+                conditionsHandler.removeCallbacks(weatherAuto);conditionsHandler.postDelayed(weatherAuto,WeatherPolicy.HOUR);
+            }
+            edit.apply();bindingConditions=true;
+            try{for(int i=0;i<4;i++)if(i<2?weather:route){conditionsFields[i].setText(TargetConditions.DEFAULTS[i]);conditionsFields[i].setError(null);}}
+            finally{bindingConditions=false;}
+            updateRouteConditionControls();updateWorkoutConditionsSummary(null);updateWeatherControls();updateConditionsStatus();scheduleTargetRefresh();
+        }catch(Exception error){conditionsStatus.setText("Couldn't clear conditions. Try again.");}
+    }
+    private boolean conditionChanged(int field){
+        String value=conditionsFields!=null&&conditionsFields[field].isAttachedToWindow()?conditionsFields[field].getText().toString().trim():setting(TargetConditions.KEYS[field],TargetConditions.DEFAULTS[field]);
+        if(field==1)return !value.isEmpty();
+        if(value.isEmpty())return field==0;
+        try{return Double.parseDouble(value)!=Double.parseDouble(TargetConditions.DEFAULTS[field]);}
+        catch(NumberFormatException error){return true;}
     }
     private String conditionsStatusText(){
         if(weatherError!=null)return weatherError;
@@ -1888,6 +1946,10 @@ public final class MainActivity extends Activity {
     private boolean weatherPermission(){return checkSelfPermission("android.permission.ACCESS_COARSE_LOCATION")==android.content.pm.PackageManager.PERMISSION_GRANTED;}
     private void updateWeatherControls(){
         if(localWeatherButton!=null&&screen==TARGETS)localWeatherButton.setEnabled(!busy&&!weatherPermissionPending&&(localWeather==null||!localWeather.running()));
+        if(weatherClearButton!=null&&screen==TARGETS){
+            boolean active=conditionChanged(0)||conditionChanged(1)||preferences.getLong("weather_observed_at",0)>0||weatherError!=null||localWeather!=null&&localWeather.running();
+            weatherClearButton.setVisibility(active?View.VISIBLE:View.GONE);weatherClearButton.setEnabled(!busy);
+        }
         if(weatherLocationSettingsButton!=null&&screen==TARGETS){
             weatherLocationSettingsButton.setVisibility(weatherError!=null&&localWeather!=null&&localWeather.needsLocationSettings()?View.VISIBLE:View.GONE);
             weatherLocationSettingsButton.setEnabled(!busy&&!weatherPermissionPending);
@@ -1956,7 +2018,7 @@ public final class MainActivity extends Activity {
         try{
             JSONObject state=settings();for(int i=0;i<4;i++)state.put(TargetConditions.KEYS[i],TargetConditions.canonical(i,values[i]));
             preferences.edit().putString("settings",state.toString()).apply();profileDirty=true;conditionsNeedRecalc=true;conditionsStatus.setText("Saved · updating paces…");
-            scheduleTargetRefresh();
+            updateRouteConditionControls();updateWeatherControls();scheduleTargetRefresh();
         }catch(Exception error){conditionsStatus.setText("Couldn't save conditions. Try again.");}
     }
     private void scheduleTargetRefresh(){

@@ -73,6 +73,10 @@ final class MaterialUi {
             }
         }
     }
+    static final class ConditionGroup extends ButtonGroup {
+        ConditionGroup(Context context){super(context,true);}
+        @Override protected int[] childWidths(int available,int[] preferred,int gap){return ButtonLayout.conditionWidths(available,preferred,gap);}
+    }
     static final class MetricGroup extends ButtonGroup {
         private int shadedFrom=-1,shadeColor;
         private final Paint shade=new Paint(Paint.ANTI_ALIAS_FLAG);

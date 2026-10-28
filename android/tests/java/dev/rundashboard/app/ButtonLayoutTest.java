@@ -55,6 +55,13 @@ public final class ButtonLayoutTest {
             }
         }
         check(ButtonLayout.metricWidths(280,new int[0],8).length==0,"empty metric row");
+        desired=new int[]{52,52,52,52,52};heights=new int[]{66,66,66,66,66};
+        widths=ButtonLayout.conditionWidths(328,desired,8);plan=ButtonLayout.place(328,widths,heights,8);
+        check(plan.top[4]==0,"temperature, humidity, elevation and Trail share one row");inside(328,widths,heights,plan);
+        for(int available:new int[]{160,224,328,360,600})for(int scale:new int[]{1,2,3}){
+            desired=new int[]{52*scale,52*scale,52*scale,52*scale,52*scale};heights=new int[]{66*scale,66*scale,66*scale,66*scale,66*scale};
+            widths=ButtonLayout.conditionWidths(available,desired,8);plan=ButtonLayout.place(available,widths,heights,8);inside(available,widths,heights,plan);
+        }
         System.out.println("Button wrapping and compact aligned overall/work metrics on narrow screens and enlarged labels: OK");
     }
 }

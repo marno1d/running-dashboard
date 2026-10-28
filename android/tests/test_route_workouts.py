@@ -164,7 +164,7 @@ class WorkoutProjectionTest(unittest.TestCase):
         plan=project(self.flat,'one_way',10000,False,[dict(kind='race',duration=1e12,base_pace=300)],settings,6000)
         self.assertAlmostEqual(plan['pace'],300/.96)
         self.assertEqual(plan['gain'],0)
-    def test_missing_128_model_does_not_invent_a_pace(self):
+    def test_missing_easy_basis_does_not_invent_a_pace(self):
         with self.assertRaises(ValueError):phases_for({},'short',None,300)
     def test_no_easy_model_is_needed_when_both_warmup_and_cooldown_are_zero(self):
         phases=phases_for(dict(workout_definitions=dict(short=dict(warmup=0,reps=1,work=3,cooldown=0))),'short',None,300)
@@ -298,11 +298,14 @@ class RouteBackendV2Test(unittest.TestCase):
         encoded=json.dumps(snapshot)
         for banned in ('route_data_v1','route_book_v2','profile_version','"profile"','"cells"'):self.assertNotIn(banned,encoded)
         self.assertEqual(len(snapshot['android']['targets']['route_plans']),5)
-    def test_route_surface_controls_128_model_and_missing_surface_is_explicit(self):
+    def test_trail_without_history_uses_nsm_terrain_only_with_explicit_label(self):
         self.assign();self.session.route_configure('liberty',json.dumps(dict(surface='trail')),self.config())
         target=self.session.cached_dashboard('2026-10-21',30,self.config())['targets']
-        self.assertTrue(all(p.get('error') for p in target['route_plans']))
-        self.assertTrue(all(p['pace'] is None for p in target['rows']))
+        self.assertTrue(all(not p.get('error') for p in target['route_plans']))
+        self.assertTrue(all(p['pace'] for p in target['rows']))
+        trail=next(r for r in target['easy'] if r['surface']=='trail')
+        self.assertEqual(trail['surface_factor'],1)
+        self.assertIn('Terrain only',trail['surface_note'])
         self.assertTrue(target['races'][0]['pace'])
     def test_missing_profile_requests_explicit_reload_instead_of_density_fallback(self):
         self.assign();self.session.cache.save_detail('1','terrain_v1',dict(status='ok',elevation_gain=10,elevation_loss=10))

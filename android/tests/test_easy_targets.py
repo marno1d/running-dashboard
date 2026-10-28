@@ -1,4 +1,4 @@
-"""Empirical 128 bpm targets: separate surfaces, conditions, and sparse history."""
+"""Historical surface calibration: common HR, conditions, and sparse history."""
 from datetime import date, timedelta
 import json
 import math
@@ -111,7 +111,7 @@ class EasyTargetsTest(unittest.TestCase):
         rows=runs(hrs=tuple(120+i%17 for i in range(30)))
         self.assertEqual(self.estimate(rows)[0]['samples'],24)
 
-    def test_easy_predictions_available_without_interval_or_trial_history_and_exported(self):
+    def test_nsm_targets_require_a_5k_basis_and_export_with_surface_calibration(self):
         session=Session()
         self.addCleanup(session.cache.close)
         activities=[]
@@ -126,11 +126,15 @@ class EasyTargetsTest(unittest.TestCase):
             categories={str(index+1):'easy' for index in range(len(activities))})
         result=session.cached_dashboard(TODAY,30,json.dumps(settings))
         self.assertIn('error',result['targets'])
-        self.assertAlmostEqual(result['targets']['easy'][0]['pace'],360)
-        self.assertAlmostEqual(result['targets']['easy'][1]['pace'],450)
+        self.assertTrue(all(r.get('error') for r in result['targets']['easy']))
+        settings.update(target_source='custom',target_time='18:00',target_surface='trail')
+        result=session.cached_dashboard(TODAY,30,json.dumps(settings))
+        self.assertAlmostEqual(result['targets']['easy'][0]['pace'],1080/5/.70)
+        self.assertAlmostEqual(result['targets']['easy'][1]['pace'],1080/5/.70*1.25)
         from comparison_contract import validate_snapshot
         snapshot=session.comparison(TODAY,30,json.dumps(settings))['comparison']
         validate_snapshot(snapshot)
+        self.assertEqual(snapshot['selection']['settings']['target_surface'],'trail')
         self.assertEqual(snapshot['android']['targets']['easy'],result['targets']['easy'])
 
 
