@@ -148,7 +148,7 @@ final class MaterialUi {
     }
     /** Simple 24dp outline icons, avoiding font glyph/emoji differences across devices. */
     static final class Icon extends Drawable {
-        static final int TRENDS=0,SESSIONS=1,TARGETS=2,PROFILE=3,SYNC=4,BACK=5,MORE=6,CLOSE=7;
+        static final int TRENDS=0,SESSIONS=1,TARGETS=2,PROFILE=3,SYNC=4,BACK=5,MORE=6,CLOSE=7,DELETE=8;
         private final int kind;
         private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
         Icon(int kind,int color){this.kind=kind;paint.setColor(color);paint.setStrokeWidth(1.8f);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);}
@@ -164,6 +164,7 @@ final class MaterialUi {
                 case BACK:line(canvas,14,5,7,12,14,19);line(canvas,7,12,21,12);break;
                 case CLOSE:line(canvas,6,6,18,18);line(canvas,18,6,6,18);break;
                 case MORE:paint.setStyle(Paint.Style.FILL);canvas.drawCircle(12,5,1.6f,paint);canvas.drawCircle(12,12,1.6f,paint);canvas.drawCircle(12,19,1.6f,paint);break;
+                case DELETE:line(canvas,4,6,20,6);line(canvas,9,3,15,3);line(canvas,7,6,8,21);line(canvas,8,21,16,21);line(canvas,16,21,17,6);line(canvas,10,10,10.5f,17);line(canvas,14,10,13.5f,17);break;
             }
             canvas.restore();
         }

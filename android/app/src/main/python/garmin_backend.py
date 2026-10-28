@@ -9,10 +9,12 @@ from dashboard_metrics import enrich, number
 from dashboard_sync import sync_extras
 from sync_job import SyncJob,SyncPaused
 from sync_coverage import coverage
+from gear_sync import sync_gear
 from web_sources import stations, dashboard as web_dashboard
 from best_effort import best_from_original
 from route_preview import route_from_original,thumbnail_route
 import training_routes
+import route_terrain
 from garminconnect import Garmin
 from garminconnect.exceptions import (
     GarminConnectAuthenticationError, GarminConnectConnectionError,
@@ -294,21 +296,38 @@ class Session:
             run['work_reps'] = len(points)
             if not points:
                 result['missing_intervals'] += 1
+        result['gear_downloads_paused']=False
+        if settings.get('include_gear') and not offline and not terrain_only and not result.get('optional_downloads_paused'):
+            try:
+                sync_gear(self.client,self.cache,self.activities,refresh,job)
+            except SyncPaused:raise
+            except Exception:
+                # Gear is optional metadata. Keep completed items and the saved
+                # dashboard; never expose provider exception text or credentials.
+                result['gear_downloads_paused']=True
+                warnings.append('Gear links could not finish. Completed checks are saved; sync again to resume or reconnect in Profile.')
         result['sync']=coverage(self.cache,result['runs'],*sync_window,settings)
         enrich(result,self.activities,self.splits,health,weather,settings,
                visible_range=window,fit_intervals=self.cache.all_details('interval_fit_v1'))
-        if settings.get('target_route_engine')==2 and settings.get('target_route_id'):
-            from route_workouts import apply_route,invalidate
+        if settings.get('target_route_id'):
+            from route_workouts import apply_route,invalidate,average_rates
+            result['targets'].update(route_name=settings.get('target_route_name','Route'),route_surface=settings.get('target_route_surface','road'),route_shape=settings.get('target_route_shape','out_back'))
             try:
                 route=next((r for r in self.route_book(settings_json)['routes'] if r['id']==settings['target_route_id']),None)
                 if route is None or not route.get('reference'):raise ValueError('Choose a reference in Profile → Routes.')
                 if route['reference'].get('stale'):raise ValueError('The route reference changed. Choose it again in Profile → Routes.')
                 if route.get('extent') is None:raise ValueError('Open Routes and select this route to load its elevation profile.')
-                data=self.cache.detail(route['reference']['id'],'route_data_v1')[1] or {}
+                data=(self.cache.detail(route['reference']['id'],'terrain_v1')[1] or {}).get('route') or {}
+                if not route_terrain.ready(data):raise ValueError('Choose your route again to load downloaded terrain.')
                 apply_route(result['targets'],route,data,settings)
+                rates=average_rates(route,data)
+                result['targets'].update(route_gain_per_mile=rates['gain_per_mile'],route_loss_per_mile=rates['loss_per_mile'])
             except ValueError as error:invalidate(result['targets'],error)
+        else:
+            from route_workouts import apply_manual_plans
+            apply_manual_plans(result['targets'],settings)
         result['warnings'] = warnings
-        result['sync_paused']=bool(result.get('optional_downloads_paused') or result.get('terrain_downloads_paused'))
+        result['sync_paused']=bool(result.get('optional_downloads_paused') or result.get('terrain_downloads_paused') or result.get('gear_downloads_paused'))
         result['cached_only'] = offline
         result['cache_complete'] = not self.cache.missing(*sync_window)
         result['has_saved_data'] = bool(self.activities)
@@ -337,12 +356,18 @@ class Session:
             kind = activity.get('activityType')
             if isinstance(kind,dict):activity['activityType'] = kind.get('typeKey')
         details = {kind:self.cache.all_details(kind) for kind in (
-            'laps','effort_v1','interval_fit_v1','hr_histogram_v1','weather_v1','terrain_v1')}
+            'laps','effort_v1','interval_fit_v1','hr_histogram_v1','weather_v1','gear_v1')}
+        details['terrain_v1']={identity:route_terrain.metrics(entry) for identity,entry in self.cache.iter_details('terrain_v1')}
         daily = {kind:self.cache.daily(first,last,kind) for kind in (
             'sleep','rhr','hrv','station:KPVU','station:KSLC')}
         payload = sanitize_snapshot(dict(schema=1,selection=dict(today=today,days=int(days),settings=settings),
                                          activities=activities,coverage=[dict(start=a,end=b) for a,b in self.cache.db.execute('SELECT start,end FROM coverage')],details=details,daily=daily,android=data))
         return dict(self.status(),comparison=payload)
+
+    def route_review(self,today,settings_json,app_version='',display_units='miles'):
+        from route_review import snapshot
+        payload=snapshot(self.cache,self.route_book(settings_json)['routes'],json.loads(settings_json),today,app_version,display_units)
+        return dict(self.status(),route_review=payload)
 
     def _effort(self, identity):
         if identity not in self.efforts:
@@ -390,6 +415,18 @@ class Session:
             except Exception:pass
         return dict(self.status(),route=outline)
 
+    def route_thumbnail(self,identity):
+        identity=str(identity)
+        if not identity.isdigit() or int(identity)<=0:raise InputError('Invalid session.')
+        found,outline=self.cache.detail(identity,'route_outline_v1')
+        if not found:
+            if self.client is None:raise InputError('Connect to Garmin to load this route.')
+            from route_matching import from_details
+            data=from_details(self.client.get_activity_details(identity,maxchart=1,maxpoly=2000))
+            self.cache.save_detail(identity,'route_match_v1',data)
+            outline=data['outline'];self.cache.save_detail(identity,'route_outline_v1',outline)
+        return dict(self.status(),route=thumbnail_route(outline))
+
     def _route_data(self,identity,outline=False,profile=False):
         found,data=self.cache.detail(identity,'route_data_v1')
         if not found or profile and data.get('profile_version')!=2 or outline and self.client is not None and not self.cache.detail(identity,'route_outline_v1')[0]:
@@ -399,6 +436,15 @@ class Session:
             self.cache.save_detail(identity,'route_data_v1',data)
             self.cache.save_detail(identity,'route_outline_v1',route_from_original(raw))
         return data
+
+    def _terrain_route_data(self,identity):
+        saved=self.cache.detail(identity,'terrain_v1')[1] or {}
+        if route_terrain.ready(saved.get('route')):
+            refined=route_terrain.retune(saved['route'])
+            if refined is not saved['route']:
+                saved['route']=refined;self.cache.save_detail(identity,'terrain_v1',saved)
+            return refined
+        raise InputError('Terrain profile not synced yet. Run Sync now with terrain enabled; watch elevation is not used.')
 
     def routes(self,settings_json):
         settings=json.loads(settings_json);routes=training_routes.configuration(self.cache)
@@ -417,7 +463,7 @@ class Session:
         rows=[r for r in self._route_rows(today,settings_json) if r.get('activity_type') in ('running','trail_running','track_running')]
         preferred=('short','medium','long') if kind=='intervals' else ('easy','easy_long') if kind in ('easy','easy_long') else (kind,)
         if kind!='route':rows.sort(key=lambda row:(row['category']!=kind,row['category'] not in preferred))
-        checked=self.cache.all_details('route_data_v1');attempted=0;scan_error=None
+        checked={identity:dict(cells=entry.get('cells',[])) for identity,entry in self.cache.iter_details('route_data_v1')};attempted=0;scan_error=None
         for row in rows:
             if attempted>=min(5,max(0,int(scan))):break
             if row['id'] in checked:continue
@@ -489,15 +535,22 @@ class Session:
             if not ref:continue
             row=self.cache.db.execute('SELECT fingerprint FROM runs WHERE id=?',(ref['id'],)).fetchone()
             ref['stale']=not row or row[0]!=ref.get('fingerprint')
-            data=self.cache.detail(ref['id'],'route_data_v1')[1] or {}
-            route['profile_ready']=data.get('profile_version')==2 and len(data.get('profile',[]))>=2
+            data=(self.cache.detail(ref['id'],'terrain_v1')[1] or {}).get('route') or {}
+            route['profile_ready']=route_terrain.ready(data)
+            if route['profile_ready']:data=route_terrain.retune(data)
             ref['outline']=self.cache.detail(ref['id'],'route_outline_v1')[1]
             if route.get('reverse') and ref.get('outline'):
                 ref['outline']=dict(segments=[list(reversed(segment)) for segment in reversed(ref['outline']['segments'])])
             if route['profile_ready']:
                 length,gain,loss=data['profile'][-1];ref.update(distance=length,gain=gain/.3048,loss=loss/.3048)
                 route['suggested_extent']=self._route_extent(route,data)
+                route['turn_confidence']=data.get('turn_confidence','review')
+                route['track']=route_terrain.display_track(data,route.get('reverse',False))
+                route['elevation_source']=data['source']
+                if route.get('extent_version')!=1 and route.get('extent_mode')!='manual':route['extent']=route['suggested_extent']
                 if route.get('extent') is None:route['extent']=route['suggested_extent']
+            else:
+                ref.pop('gain',None);ref.pop('loss',None)
         return dict(self.status(),routes=saved)
 
     def _route_rows(self,today,settings_json):
@@ -508,8 +561,27 @@ class Session:
         length=data['profile'][-1][0]
         if route['shape']=='out_back':
             turn=data.get('suggested_turn')
+            if turn and route.get('reverse'):turn=data.get('suggested_reverse_turn') or length-turn
             return min(turn,length) if turn and .05*length<turn else length/2
         return (data.get('suggested_loop') or length) if route['shape']=='loop' else length
+
+    def route_create(self,name,settings_json):
+        import uuid
+        name=str(name).strip()
+        if not name or len(name)>100:raise InputError('Use a route name of 1–100 characters.')
+        routes=self.route_book(settings_json)['routes'];identity='route_'+uuid.uuid4().hex
+        routes.append(dict(id=identity,name=name,shape='out_back',surface='road',extent=None,reverse=False,reference=None))
+        self.cache.save_meta('route_book_v2',routes)
+        return dict(self.route_book(settings_json),created_route_id=identity)
+
+    def route_delete(self,route_id,settings_json):
+        routes=self.route_book(settings_json)['routes']
+        remaining=[route for route in routes if route['id']!=route_id]
+        if len(remaining)==len(routes):raise InputError('Route not found.')
+        # Save an explicit empty list too, so deleting the last route does not
+        # recreate the original starter routes. Session/GPS caches are shared.
+        self.cache.save_meta('route_book_v2',remaining)
+        return dict(self.route_book(settings_json),deleted_route_id=route_id)
 
     def route_configure(self,route_id,patch_json,settings_json):
         from route_workouts import SHAPES
@@ -531,7 +603,7 @@ class Session:
         if 'extent' in patch:
             value=number(patch['extent']);ref=route.get('reference') or {}
             if value is None or not 100<=value<=ref.get('distance',0):raise InputError('Use a distance from 100 m to the reference length.')
-            route['extent']=value
+            route['extent']=value;route['extent_mode']='manual';route['extent_version']=1
         self.cache.save_meta('route_book_v2',routes)
         return self.route_book(settings_json)
 
@@ -542,72 +614,128 @@ class Session:
         else:
             row=next((r for r in self._route_rows(today,settings_json) if r['id']==str(identity)),None)
             if row is None:raise InputError('This session is no longer saved.')
-            data=self._route_data(row['id'],True,True)
-            if len(data.get('profile',[]))<2 or len(data.get('cells',[]))<2:raise InputError('Choose an outdoor recording with GPS, distance, and altitude. Elevation totals alone cannot define route segments.')
-            length,gain,loss=data['profile'][-1]
-            route['reference']=dict(id=row['id'],title=row['title'],date=row['date'],distance=length,duration=row['duration'],gain=gain/.3048,loss=loss/.3048,
+            if row.get('activity_type') not in ('running','trail_running','track_running'):raise InputError('Choose an outdoor running session.')
+            data=(self.cache.detail(row['id'],'terrain_v1')[1] or {}).get('route')
+            route['reference']=dict(id=row['id'],title=row['title'],date=row['date'],distance=row['distance'],duration=row['duration'],
                 fingerprint=self.cache.db.execute('SELECT fingerprint FROM runs WHERE id=?',(row['id'],)).fetchone()[0])
-            route['extent']=self._route_extent(route,data)
+            route['extent']=self._route_extent(route,route_terrain.retune(data)) if route_terrain.ready(data) else None
+            route['extent_mode']='suggested';route['extent_version']=1
         self.cache.save_meta('route_book_v2',routes)
         return self.route_book(settings_json)
 
     def route_candidates_v2(self,route_id,today,settings_json,scan=0):
-        result=self.route_candidates(route_id,'route',today,settings_json,scan)
         route=next((r for r in self.route_book(settings_json)['routes'] if r['id']==route_id),None)
-        ref=(route or {}).get('reference') or {};checked=self.cache.all_details('route_data_v1')
-        outlines=self.cache.all_details('route_outline_v1')
-        anchor=checked.get(ref.get('id'),{}).get('cells',[])
-        for row in result['candidates']:
-            data=checked.get(row['id'],{});row['overlap']=training_routes.gps_overlap(anchor,data.get('cells',[]))
-            row['profile_ready']=len(data.get('profile',[]))>=2
-            row['longer']=(row.get('distance') or 0)>ref.get('distance',float('inf'))
-            if row['id'] in outlines:row['outline']=thumbnail_route(outlines[row['id']])
-        result['candidates'].sort(key=lambda r:r.get('started') or r['date'],reverse=True)
-        return result
+        if route is None:raise InputError('Route not found.')
+        from route_matching import candidate
+        rows=[row for row in self._route_rows(today,settings_json) if row.get('activity_type') in ('running','trail_running','track_running')]
+        rows.sort(key=lambda row:row.get('started') or row['date'],reverse=True)
+        ref=route.get('reference') or {};checked={identity:dict(cells=entry.get('cells',[])) for identity,entry in self.cache.iter_details('route_data_v1')}
+        indexes={identity:dict(cells=entry.get('cells',[])) for identity,entry in self.cache.iter_details('route_match_v1')};attempted=0;error=None
+        terrain_profiles=route_terrain.cached_states(self.cache)
+        for row in rows:
+            if attempted>=min(5,max(0,int(scan))):break
+            if row['id'] in checked or row['id'] in indexes:continue
+            attempted+=1
+            try:
+                from route_matching import from_details
+                if self.client is None:raise InputError('Connect to Garmin to scan more routes.')
+                data=from_details(self.client.get_activity_details(row['id'],maxchart=1,maxpoly=2000))
+                self.cache.save_detail(row['id'],'route_match_v1',data);indexes[row['id']]=data
+                if not self.cache.detail(row['id'],'route_outline_v1')[0]:self.cache.save_detail(row['id'],'route_outline_v1',data['outline'])
+            except Exception:
+                error='Could not check more routes. Completed checks are saved; reconnect and resume.';break
+        outlines={identity:thumbnail_route(outline) for identity,outline in self.cache.iter_details('route_outline_v1')}
+        anchor=checked.get(ref.get('id'),indexes.get(ref.get('id'),{})).get('cells',[])
+        candidates=[]
+        for row in rows:
+            identity=row['id'];data=checked.get(identity,indexes.get(identity,{}));item=candidate(row)
+            item.update(overlap=training_routes.gps_overlap(anchor,data.get('cells',[])),
+                profile_ready=terrain_profiles.get(identity)==('ok',True),longer=(row.get('distance') or 0)>ref.get('distance',float('inf')),
+                checked=identity in checked or identity in indexes)
+            if identity in outlines:item['outline']=thumbnail_route(outlines[identity])
+            candidates.append(item)
+        return dict(self.status(),candidates=candidates,scan_error=error,remaining=sum(not row['checked'] for row in candidates))
 
-    def route_matches(self,route_id,identity,today,settings_json,scan=0):
-        """Preview a prospective reference and longer matches without assigning it."""
+    def _route_matcher(self,route_id,identity,today,settings_json):
+        from route_matching import RouteMatcher
+        if not any(route['id']==route_id for route in self.route_book(settings_json)['routes']):
+            raise InputError('Route not found.')
         rows=self._route_rows(today,settings_json)
         original=next((r for r in rows if r['id']==str(identity)),None)
         if original is None:raise InputError('This session is no longer saved.')
-        anchor=self._route_data(original['id'],True,True)
-        if len(anchor.get('cells',[]))<2 or len(anchor.get('profile',[]))<2:
-            raise InputError('Choose an outdoor recording with GPS, distance, and altitude.')
-        longer=[r for r in rows if r.get('activity_type') in ('running','trail_running','track_running')
-                and r['id']!=original['id'] and (r.get('distance') or 0)>(original.get('distance') or 0)]
-        longer.sort(key=lambda r:(r['distance'],r['started']),reverse=True)
-        checked=self.cache.all_details('route_data_v1');attempted=0;scan_error=None
-        for row in longer:
-            if attempted>=min(5,max(0,int(scan))):break
-            if row['id'] in checked:continue
-            attempted+=1
-            try:checked[row['id']]=self._route_data(row['id'],True)
+        if original.get('activity_type') not in ('running','trail_running','track_running'):
+            raise InputError('Choose an outdoor running session.')
+        found,anchor=self.cache.detail(original['id'],'route_match_v1')
+        if not found:anchor=self._route_data(original['id'],True)
+        if len(anchor.get('cells',[]))<2:
+            raise InputError('Choose an outdoor recording with a usable GPS route.')
+        return RouteMatcher(self.cache,rows,original,anchor)
+
+    def _route_match_download(self,matcher,row):
+        if self.client is None:raise InputError('Connect to Garmin to scan more routes.')
+        # A GPS-only index is sufficient for discovery. Read the full FIT only
+        # if this session is subsequently selected as the elevation reference.
+        matcher.accept(row['id'],self.client.get_activity_details(row['id'],maxchart=1,maxpoly=2000))
+
+    def route_matches(self,route_id,identity,today,settings_json,scan=0):
+        """Preview cached matches and optionally check a small legacy batch."""
+        matcher=self._route_matcher(route_id,identity,today,settings_json);error=None
+        for row in matcher.pending[:min(5,max(0,int(scan)))]:
+            try:self._route_match_download(matcher,row)
             except Exception:
-                scan_error='Could not check more recordings. Check your connection and retry.';break
-        result=self.route_candidates_v2(route_id,today,settings_json)
-        candidates={r['id']:r for r in result['candidates']}
-        if original['id'] not in candidates:raise InputError('Choose an outdoor running session.')
-        original=candidates[original['id']];matches=[]
-        for row in longer:
-            if row['id'] not in candidates:continue
-            candidate=candidates[row['id']]
-            score=training_routes.gps_coverage(anchor['cells'],checked.get(row['id'],{}).get('cells',[]))
-            if score>=.85:
-                candidate.update(overlap=score,longer=True);matches.append(candidate)
-        return dict(self.status(),original=original,candidates=matches,scan_error=scan_error,
-                    remaining=sum(r['id'] not in checked for r in longer),
-                    checked=sum(r['id'] in checked for r in longer))
+                error='Could not check more routes. Completed checks are saved; reconnect and resume.';break
+        return dict(self.status(),**matcher.snapshot(error))
+
+    def route_scan(self,route_id,identity,today,settings_json,progress=None):
+        """Scan all saved longer routes once, publishing results without model rebuilds."""
+        job=SyncJob(progress)
+        matcher=self._route_matcher(route_id,identity,today,settings_json);error=None;paused=False
+        def publish(label,results=False):
+            if progress is not None:
+                checked=len(matcher.rows)-sum(row['id'] not in matcher.index for row in matcher.rows)
+                progress.update(label,checked,len(matcher.rows),json.dumps(matcher.snapshot(maximum=10)) if results else '')
+        publish('Checking saved routes',True)
+        try:
+            for index,row in enumerate(matcher.pending):
+                job.checkpoint();publish('Checking '+row['date']+' · '+row['title'][:50])
+                self._route_match_download(matcher,row)
+                publish('GPS route checked',(index+1)%5==0)
+            job.checkpoint()
+        except SyncPaused:paused=True
+        except GarminConnectTooManyRequestsError:
+            error='Garmin is limiting downloads. Completed checks are saved; wait a few minutes, then resume.'
+        except Exception:
+            error='Route scan interrupted. Completed checks are saved; reconnect and resume.'
+        return dict(self.status(),**matcher.snapshot(error,paused))
 
     def route_use(self,route_id,settings_json):
         routes=self.route_book(settings_json)['routes'];route=next((r for r in routes if r['id']==route_id),None)
         if route is None or not route.get('reference'):raise InputError('Choose a route reference in Profile → Routes.')
         ref=route['reference']
         if ref.get('stale'):raise InputError('The reference session changed. Choose it again in Profile → Routes.')
-        data=self._route_data(ref['id'],True,True)
-        if len(data.get('profile',[]))<2:raise InputError('The reference needs a recorded altitude profile. Choose another session.')
-        if route.get('extent') is None:
-            route['extent']=self._route_extent(route,data);self.cache.save_meta('route_book_v2',routes)
-        return dict(self.status(),selection={key:route[key] for key in ('id','name','shape','surface','extent','reverse')})
+        data=self._terrain_route_data(ref['id'])
+        routes=self.route_book(settings_json)['routes'];route=next(r for r in routes if r['id']==route_id)
+        route['extent_version']=1
+        if route.get('extent') is None:route['extent']=self._route_extent(route,data)
+        self.cache.save_meta('route_book_v2',routes)
+        from route_workouts import average_rates
+        selection={key:route[key] for key in ('id','name','shape','surface','extent','reverse')}
+        selection.update(average_rates(route,data))
+        selection['elevation_source']=data['source']
+        return dict(self.status(),selection=selection)
+
+    def workout_trace(self,plan_json,settings_json):
+        from workout_trace import trace
+        settings=json.loads(settings_json);plan=json.loads(plan_json)
+        route=next((r for r in self.route_book(settings_json)['routes'] if r['id']==settings.get('target_route_id')),None)
+        if route is None or not route.get('reference') or route['reference'].get('stale'):
+            raise InputError('Choose a current route reference in Profile → Routes.')
+        if plan.get('route_id')!=route['id'] or plan.get('reference_id')!=route['reference']['id'] or plan.get('course')!={key:route.get(key) for key in ('shape','extent','reverse')}:
+            raise InputError('The route changed. Refresh targets and reopen the card.')
+        data=(self.cache.detail(route['reference']['id'],'terrain_v1')[1] or {}).get('route') or {}
+        if not route_terrain.ready(data):raise InputError('Sync terrain before opening the route explorer.')
+        try:return dict(self.status(),trace=trace(route,data,plan))
+        except ValueError as error:raise InputError(str(error))
 
     def workout_latest(self,kind,today,settings_json):
         from route_workouts import infer_workout
@@ -618,7 +746,7 @@ class Session:
         if kind in ('easy','easy_long'):
             if not row.get('duration'):raise InputError('The latest session has no recorded duration.')
             result['minutes']=max(5,min(360,round(row['duration']/60)));return result
-        try:definition,walking=infer_workout(self._route_data(row['id'],False,True),row['category'],settings,row['id'])
+        try:definition,walking=infer_workout(self._route_data(row['id']),row['category'],settings,row['id'])
         except ValueError as error:raise InputError(str(error)) from None
         result.update(definition=definition,walking_pace=walking)
         if kind=='walking' and walking is None:raise InputError('The latest interval recording has no usable moving recovery laps. Enter walking pace manually.')
@@ -675,7 +803,7 @@ _session = Session()
 def call(operation, *args):
     """One JSON boundary: never allow a raw Python exception into Android logs."""
     try:
-        if operation not in ('configure_cache', 'restore', 'login', 'verify', 'runs', 'logout', 'status', 'dashboard', 'cached_dashboard', 'sync_terrain', 'comparison', 'laps', 'sample', 'route', 'routes', 'route_candidates', 'route_assign', 'route_rename', 'route_selection', 'route_book', 'route_configure', 'route_reference', 'route_candidates_v2', 'route_matches', 'route_use', 'workout_latest'):
+        if operation not in ('configure_cache', 'restore', 'login', 'verify', 'runs', 'logout', 'status', 'dashboard', 'cached_dashboard', 'sync_terrain', 'comparison', 'route_review', 'laps', 'sample', 'route', 'route_thumbnail', 'routes', 'route_candidates', 'route_assign', 'route_rename', 'route_selection', 'route_book', 'route_create', 'route_delete', 'route_configure', 'route_reference', 'route_candidates_v2', 'route_matches', 'route_scan', 'route_use', 'workout_trace', 'workout_latest'):
             raise InputError('Unknown operation.')
         result = getattr(_session, operation)(*args)
         result['ok'] = True

@@ -30,11 +30,56 @@ def populated():
     s.client=Mock();s.client.download_activity.return_value=recording([(0,0),(6000,1800)])
     return s
 
-TERRAIN=dict(status='ok',source='opentopodata:ned10m,srtm30m',elevation_gain=50,elevation_loss=40,work_gain=None,work_loss=None,samples=81)
+TERRAIN=dict(status='ok',source='opentopodata:ned10m,srtm30m',elevation_gain=50,elevation_loss=40,work_gain=None,work_loss=None,samples=81,
+    route=dict(profile_version=1,source='opentopodata:ned10m,srtm30m',profile=[[0,0,0],[3000,50,0],[6000,50,40]],heights=[[0,100],[3000,150],[6000,110]],track=[]))
 SETTINGS=json.dumps(dict(classification_mode='web',interval_mode='session',include_recordings=True,include_recovery=True,include_weather=True,include_station_weather=True))
 
 
 class SyncTest(unittest.TestCase):
+    def test_normal_full_history_sync_backfills_old_totals_outside_chart_range_and_reuses_profiles(self):
+        s=populated();self.addCleanup(s.cache.close)
+        rows=s.cache.activities('2026-10-01','2026-10-15')+[activity(3,'2025-06-02')]
+        s.cache.save_window('2025-06-01','2026-10-15',rows)
+        aggregate=dict(TERRAIN);aggregate.pop('route')
+        for identity in ('1','3'):s.cache.save_detail(identity,'terrain_v1',aggregate)
+        s.cache.save_detail('2','terrain_v1',TERRAIN)
+        config=json.dumps(dict(full_history=True,include_terrain=True,include_recordings=False))
+        with patch('dashboard_sync.terrain_summary',return_value=TERRAIN) as fetch,patch('dashboard_sync.time.sleep'):
+            before=s.cached_dashboard('2026-10-15',7,config)
+            self.assertEqual(before['sync']['terrain']['done'],1);self.assertEqual(before['sync']['terrain']['pending'],2)
+            first=s.dashboard('2026-10-15',7,config)
+            self.assertEqual([c.args[0] for c in s.client.download_activity.call_args_list],['1','3'])
+            self.assertEqual(first['sync']['terrain']['done'],3);self.assertEqual(first['sync']['terrain']['pending'],0)
+            self.assertTrue(s.cache.detail('3','terrain_v1')[1]['route']['profile'])
+            self.assertNotIn('3',[r['id'] for r in first['runs']])
+            s.dashboard('2026-10-15',7,config)
+            self.assertEqual(fetch.call_count,2);self.assertEqual(s.client.download_activity.call_count,2)
+        s.client.connectapi.assert_not_called()
+
+    def test_backfill_failure_keeps_old_totals_pending_and_retry_completes_only_remaining(self):
+        s=populated();self.addCleanup(s.cache.close)
+        aggregate=dict(TERRAIN);aggregate.pop('route')
+        for identity in ('1','2'):s.cache.save_detail(identity,'terrain_v1',aggregate)
+        with patch('dashboard_sync.terrain_summary',side_effect=[TERRAIN,OSError('private')]),patch('dashboard_sync.time.sleep'):
+            first=s.sync_terrain('2026-10-15',7,SETTINGS)
+        self.assertEqual(first['sync']['terrain']['done'],1);self.assertEqual(first['sync']['terrain']['pending'],1)
+        self.assertEqual(s.cache.detail('1','terrain_v1')[1],aggregate)
+        self.assertNotIn('private',str(first['warnings']))
+        with patch('dashboard_sync.terrain_summary',return_value=TERRAIN),patch('dashboard_sync.time.sleep'):
+            second=s.sync_terrain('2026-10-15',7,SETTINGS)
+        self.assertEqual(second['sync']['terrain']['done'],2)
+        self.assertEqual([c.args[0] for c in s.client.download_activity.call_args_list],['2','1','1'])
+
+    def test_incomplete_backfill_response_does_not_replace_old_metrics_or_mark_profile_done(self):
+        s=populated();self.addCleanup(s.cache.close)
+        aggregate=dict(TERRAIN);aggregate.pop('route')
+        for identity in ('1','2'):s.cache.save_detail(identity,'terrain_v1',aggregate)
+        incomplete=dict(aggregate,elevation_gain=999)
+        with patch('dashboard_sync.terrain_summary',return_value=incomplete),patch('dashboard_sync.time.sleep'):
+            result=s.sync_terrain('2026-10-15',7,SETTINGS)
+        self.assertEqual(result['sync']['terrain']['done'],0);self.assertEqual(result['sync']['terrain']['pending'],2)
+        self.assertEqual(s.cache.detail('1','terrain_v1')[1],aggregate)
+
     def test_pause_commits_current_route_and_resume_downloads_only_remaining(self):
         s=populated();self.addCleanup(s.cache.close)
         class Progress:

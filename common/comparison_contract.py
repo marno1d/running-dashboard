@@ -11,6 +11,8 @@ LAP = fields('distance duration averageSpeed intensityType averageHR elevationGa
 FIT_INTERVAL = fields('distanceMeters durationSec count avgHr ascentMeters descentMeters source')
 TERRAIN = fields('status reason source elevation_gain elevation_loss work_gain work_loss samples')
 WEATHER = fields('temperatureF dewPointF humidity source station observation_time observation_offset')
+GEAR_ITEM = fields('id name type status')
+GEAR = dict(items=[GEAR_ITEM],complete=SCALAR,checked_at=SCALAR)
 ROW = fields('id date started category pace distance duration timer_duration activity_type is_run average_hr max_hr hr_target hr_below_target category_reason training_load elevation_gain elevation_loss elevation_source work_pace work_distance work_duration work_hr work_reps work_gain work_loss work_source hr_under_percent hr_total_seconds hr_source trial_pace display_pace display_overall_pace display_work_pace range_lower range_upper value lap last_lap reps calibrations')
 ROW.update(best_5k=EFFORT,weather=WEATHER,terrain=TERRAIN)
 WEEK = fields('date total_minutes run_minutes run_miles training_load load_count interval_percent interval_minutes sessions sleep_hours sleep_score resting_hr hrv sleep_hours_days sleep_score_days resting_hr_days hrv_days')
@@ -21,15 +23,17 @@ TARGETS.update(rows=[fields('category reps pace base_pace distance_basis delta')
                races=[fields('label duration base_duration pace')],
                easy=[fields('surface target_hr samples error hr_low hr_high latest_date method base_pace pace pace_low pace_high distance_basis')])
 TARGETS['workout']=fields('kind route_name basis distance duration gain loss')
-TARGETS.update(fields('route_engine route_name route_surface route_shape route_error'))
-PHASE=fields('kind rep start end duration gain loss')
+TARGETS.update(fields('route_engine route_name route_surface route_shape route_error route_gain_per_mile route_loss_per_mile'))
+PHASE=fields('kind rep start end distance duration pace gain loss')
 PLAN=fields('kind surface error distance duration gain loss pace work_distance work_duration work_gain work_loss work_pace turnaround extrapolated')
 PLAN['phases']=[PHASE]
+PLAN['splits']=[fields('index start end distance duration pace gain loss partial')]
 TARGETS['route_plans']=[PLAN]
 TARGETS['races'][0].update(fields('distance gain loss extrapolated'))
 ANDROID = fields('sync_paused terrain_downloads_paused start end history_start history_end cached_only cache_complete has_saved_data optional_downloads_paused missing_trials missing_intervals split_failures')
+ANDROID.update(fields('gear_downloads_paused'))
 COUNT=fields('done total pending skipped enabled')
-ANDROID['sync']={key:COUNT for key in ('terrain','recovery','hr_recordings','interval_recordings','trial_recordings','weather')}
+ANDROID['sync']={key:COUNT for key in ('terrain','recovery','hr_recordings','interval_recordings','trial_recordings','weather','gear')}
 ANDROID['sync']['summaries_complete']=SCALAR
 ANDROID.update(runs=[ROW],weeks=[WEEK],summary=SUMMARY,targets=TARGETS,
                run_points=[ROW],interval_points=[ROW],trial_points=[ROW],
@@ -39,7 +43,9 @@ SETTINGS.update(fields('target_prediction_adjust_elevation target_prediction_adj
 SETTINGS.update(fields('target_gain_per_mile target_loss_per_mile target_workout_kind target_route_id target_route_name target_easy_minutes target_easy_long_minutes'))
 SETTINGS['target_route_reference']=fields('distance duration base_pace surface')
 SETTINGS['target_interval_rates']={key:fields('gain_per_mile loss_per_mile distance duration') for key in ('short','medium','long')}
-SETTINGS.update(fields('target_route_engine target_walking_pace'))
+SETTINGS.update(fields('target_route_engine target_walking_pace target_route_surface target_route_shape'))
+SETTINGS.update(fields('target_route_source'))
+SETTINGS.update(fields('include_gear'))
 SETTINGS['workout_definitions']={key:fields('warmup reps work cooldown') for key in ('short','medium','long')}
 SETTINGS.update(categories={'*':SCALAR},laps={'*':[SCALAR]})
 ACTIVITY = fields('activityId activityName startTimeLocal startTimeGMT distance duration movingDuration elapsedDuration averageSpeed averageHR maxHR activityType activityTrainingLoad elevationGain elevationLoss averageTemperature fastestSplit_5000')
@@ -51,6 +57,7 @@ STATION_DAY['rows'] = [OBSERVATION]
 SCHEMA = dict(schema=SCALAR,selection=dict(today=SCALAR,days=SCALAR,settings=SETTINGS),
               activities=[ACTIVITY],coverage=[fields("start end")],android=ANDROID,
               details=dict(laps={'*':dict(lapDTOs=[LAP])},effort_v1={'*':EFFORT},
+                           gear_v1={'*':GEAR},
                            interval_fit_v1={'*':FIT_INTERVAL},hr_histogram_v1={'*':{'*':SCALAR}},
                            weather_v1={'*':fields('temperature apparentTemperature dewPoint humidity weatherDescription weatherStation temperatureF dewPointF source')},
                            terrain_v1={'*':TERRAIN}),

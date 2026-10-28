@@ -5,7 +5,10 @@ run(JAVA/'javac','-d',output,
     ROOT/'app/src/dev/rundashboard/app/TargetConditions.java',
     ROOT/'app/src/dev/rundashboard/app/WeatherPolicy.java',
     ROOT/'app/src/dev/rundashboard/app/WeatherData.java',
+    ROOT/'app/src/dev/rundashboard/app/WeatherLocation.java',
     ROOT/'tests/java/dev/rundashboard/app/TargetConditionsTest.java',
-    ROOT/'tests/java/dev/rundashboard/app/WeatherDataTest.java')
+    ROOT/'tests/java/dev/rundashboard/app/WeatherDataTest.java',
+    ROOT/'tests/java/dev/rundashboard/app/WeatherLocationTest.java')
 run(JAVA/'java','-cp',output,'dev.rundashboard.app.TargetConditionsTest')
 run(JAVA/'java','-cp',output,'dev.rundashboard.app.WeatherDataTest')
+run(JAVA/'java','-cp',output,'dev.rundashboard.app.WeatherLocationTest')

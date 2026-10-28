@@ -7,14 +7,14 @@ from pathlib import Path
 import struct
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock,patch
 import zipfile
 from fitdecode.utils import compute_crc
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path[:0]=[str(ROOT/'common'),str(ROOT/'android/app/src/main/python')]
 from training_routes import recording_data
-from route_workouts import RoutePath,phases_for,project,infer_workout,workout_definition,apply_route,WALKING_PACE
+from route_workouts import RoutePath,phases_for,project,infer_workout,workout_definition,apply_route,WALKING_PACE,course_profile,average_rates
 from garmin_backend import Session,InputError
 from test_easy_targets import runs
 
@@ -78,6 +78,39 @@ class WorkoutProjectionTest(unittest.TestCase):
         self.assertAlmostEqual(plan['distance'],7500)
         self.assertAlmostEqual(plan['turnaround'],3750,delta=.25)
         self.assertAlmostEqual(plan['pace'],360)
+    def test_easy_mile_splits_include_final_partial_and_preserve_time_distance_and_gain(self):
+        plan=project(self.flat,'one_way',10000,False,phases_for({},'easy',360),{})
+        splits=plan['splits'];self.assertEqual(len(splits),5)
+        self.assertTrue(splits[-1]['partial']);self.assertTrue(all(not s['partial'] for s in splits[:-1]))
+        self.assertAlmostEqual(sum(s['distance'] for s in splits),plan['distance'])
+        self.assertAlmostEqual(sum(s['duration'] for s in splits),2700)
+        self.assertAlmostEqual(splits[0]['distance'],1609.344)
+        for split in splits:self.assertAlmostEqual(split['pace'],360)
+    def test_hilly_easy_splits_have_different_paces_and_weighted_average_matches_card(self):
+        profile=[[0,0,0],[1609.344,200,0],[3218.688,200,200],[10000,200,200]]
+        plan=project(profile,'out_back',5000,False,phases_for({},'easy',360),{})
+        splits=plan['splits']
+        self.assertGreater(max(s['pace'] for s in splits)-min(s['pace'] for s in splits),5)
+        self.assertAlmostEqual(sum(s['duration'] for s in splits)/sum(s['distance'] for s in splits)*1000,plan['pace'])
+        self.assertAlmostEqual(sum(s['gain'] for s in splits),plan['gain'])
+        self.assertAlmostEqual(sum(s['loss'] for s in splits),plan['loss'])
+        self.assertAlmostEqual(plan['distance'],2*plan['turnaround'],delta=.5)
+    def test_phase_paces_use_their_distance_and_keep_walks_in_simulation(self):
+        phases=phases_for(dict(workout_definitions=dict(short=dict(warmup=5,reps=3,work=3,cooldown=5))),'short',360,270)
+        plan=project([[0,0,0],[1000,100,0],[4000,100,150],[10000,300,150]],'one_way',10000,False,phases,{})
+        for phase in plan['phases']:
+            self.assertAlmostEqual(phase['pace'],phase['duration']/phase['distance']*1000)
+        work=[p for p in plan['phases'] if p['kind']=='work'];walk=[p for p in plan['phases'] if p['kind']=='walk']
+        self.assertEqual(len(walk),3);self.assertEqual(sum(p['duration'] for p in walk),180)
+        self.assertAlmostEqual(plan['work_pace'],sum(p['duration'] for p in work)/sum(p['distance'] for p in work)*1000)
+        self.assertGreater(work[1]['start'],work[0]['end'])
+    def test_representative_loop_uses_multiple_laps_and_closes_without_losing_hill_variation(self):
+        data=dict(profile=[[0,0,0],[500,6,0],[1000,6,3],[1500,12,3],[2000,12,12]])
+        route=dict(shape='loop',extent=1000,reverse=False)
+        profile=course_profile(route,data)
+        self.assertEqual(profile[-1],[1000,6,6]);self.assertEqual(profile[0],[0,0,0])
+        self.assertGreater(profile[len(profile)//2][1],0);self.assertEqual(profile[len(profile)//2][2],0)
+        self.assertEqual(average_rates(route,data)['gain_per_mile'],round(6/.3048/(1000/1609.344),1))
     def test_timed_turnaround_matches_round_trip_time_on_a_hill(self):
         profile=[[0,0,0],[10000,1000,0]]
         plan=project(profile,'out_back',10000,False,phases_for({},'easy',360),{})
@@ -144,6 +177,8 @@ class WorkoutProjectionTest(unittest.TestCase):
 class RouteBackendV2Test(unittest.TestCase):
     def setUp(self):
         self.session=Session();self.addCleanup(self.session.cache.close)
+        from terrain_fixture import elevations
+        provider=patch('dashboard_sources.terrain.query_elevations',side_effect=elevations);provider.start();self.addCleanup(provider.stop)
         activities=[]
         for i,row in enumerate(runs(),1):activities.append(dict(activityId=i,activityName='Easy '+str(i),activityType='running',startTimeLocal=row['started'],distance=row['distance'],duration=row['duration'],averageHR=row['average_hr'],elevationGain=0,elevationLoss=0))
         self.session.cache.save_window('2026-09-01','2026-10-21',activities)
@@ -151,6 +186,8 @@ class RouteBackendV2Test(unittest.TestCase):
             target_source='custom',target_time='20:00',target_gain_per_mile=0,target_loss_per_mile=0,target_route_id='liberty',target_route_engine=2,
             categories={str(i):'easy' for i in range(1,8)})
         self.session.client=Mock();self.session.client.download_activity.return_value=profile_fit()
+        from dashboard_sources import terrain_summary
+        self.session.cache.save_detail('1','terrain_v1',terrain_summary(profile_fit(),dict(activityType='running')))
     def config(self,**changes):return json.dumps(dict(self.settings,**changes))
     def assign(self):return self.session.route_reference('liberty','1','2026-10-21',self.config())
     def test_one_reference_shape_surface_and_longer_gps_suggestions(self):
@@ -173,7 +210,9 @@ class RouteBackendV2Test(unittest.TestCase):
             data=dict(profile_version=2,profile=[[0,0,0],[distance,10,10]],cells=[[10,10],[11,11]])
             if i==3:data['cells']=[[1000,1000],[1001,1001]]
             self.session.cache.save_detail(str(i),'route_data_v1',data)
+            self.session.cache.save_detail(str(i),'terrain_v1',dict(status='ok',route=dict(profile_version=1,source='opentopodata:synthetic',profile=data['profile'],track=[[0,0,0],[distance,1,1]])))
             self.session.cache.save_detail(str(i),'route_outline_v1',dict(segments=[[[0,1],[1,0]]]))
+        self.session.client.get_activity_details.return_value=dict(geoPolylineDTO=dict(polyline=[dict(lat=40+i*.001,lon=-111) for i in range(20)]))
         return distances
     def test_reference_browser_is_newest_first_even_for_longer_gps_matches(self):
         self.candidate_history();self.assign()
@@ -217,24 +256,25 @@ class RouteBackendV2Test(unittest.TestCase):
         self.candidate_history()
         self.session.cache.db.execute("DELETE FROM details WHERE id!='1'");self.session.cache.db.commit()
         result=self.session.route_matches('liberty','1','2026-10-21',self.config(),2)
-        calls=self.session.client.download_activity.call_args_list
+        calls=self.session.client.get_activity_details.call_args_list
         self.assertEqual([call.args[0] for call in calls],['3','6'])
         self.assertEqual(result['remaining'],3)
         result=self.session.route_matches('liberty','1','2026-10-21',self.config(),100)
-        self.assertEqual([call.args[0] for call in self.session.client.download_activity.call_args_list],['3','6','2','5','7'])
+        self.assertEqual([call.args[0] for call in self.session.client.get_activity_details.call_args_list],['3','6','2','5','7'])
         self.assertEqual(result['remaining'],0)
-        before=self.session.client.download_activity.call_count
+        before=self.session.client.get_activity_details.call_count
         self.session.route_matches('liberty','1','2026-10-21',self.config(),5)
-        self.assertEqual(self.session.client.download_activity.call_count,before)
+        self.assertEqual(self.session.client.get_activity_details.call_count,before)
+        self.session.client.download_activity.assert_not_called()
     def test_failed_longer_scan_preserves_original_choice_and_can_retry(self):
         self.candidate_history();self.assign()
         self.session.cache.db.execute("DELETE FROM details WHERE id!='1'");self.session.cache.db.commit()
-        before=self.session.cache.meta('route_book_v2');self.session.client.download_activity.side_effect=OSError('private')
+        before=self.session.cache.meta('route_book_v2');self.session.client.get_activity_details.side_effect=OSError('private')
         result=self.session.route_matches('liberty','1','2026-10-21',self.config(),5)
         self.assertIsNotNone(result['scan_error']);self.assertNotIn('private',json.dumps(result))
         self.assertEqual(result['original']['id'],'1');self.assertEqual(result['remaining'],5)
         self.assertEqual(self.session.cache.meta('route_book_v2'),before)
-        self.session.client.download_activity.side_effect=None
+        self.session.client.get_activity_details.side_effect=None
         self.assertIsNone(self.session.route_matches('liberty','1','2026-10-21',self.config(),5)['scan_error'])
     def test_browser_needs_review_follows_each_sessions_category_and_work_data(self):
         self.candidate_history()
@@ -246,7 +286,7 @@ class RouteBackendV2Test(unittest.TestCase):
         self.assign();self.session.client=None
         before=self.session.cache.db.total_changes
         data=self.session.cached_dashboard('2026-10-21',30,self.config())
-        target=data['targets'];self.assertEqual(target['route_engine'],2)
+        target=data['targets'];self.assertEqual(target['route_engine'],4)
         self.assertTrue(all(not p.get('error') for p in target['route_plans']))
         self.assertEqual(len(target['route_plans']),5)
         self.assertTrue(all(p['pace'] for p in target['rows']))
@@ -265,12 +305,12 @@ class RouteBackendV2Test(unittest.TestCase):
         self.assertTrue(all(p['pace'] is None for p in target['rows']))
         self.assertTrue(target['races'][0]['pace'])
     def test_missing_profile_requests_explicit_reload_instead_of_density_fallback(self):
-        self.assign();self.session.cache.save_detail('1','route_data_v1',dict(cells=[[1,1],[2,2]],laps=[]))
+        self.assign();self.session.cache.save_detail('1','terrain_v1',dict(status='ok',elevation_gain=10,elevation_loss=10))
         result=self.session.cached_dashboard('2026-10-21',30,self.config())['targets']
         self.assertIn('route_error',result);self.assertTrue(all(row['pace'] is None for row in result['rows']))
         before=self.session.client.download_activity.call_count
-        self.session.route_use('liberty',self.config())
-        self.assertEqual(self.session.client.download_activity.call_count,before+1)
+        with self.assertRaisesRegex(InputError,'Sync now'):self.session.route_use('liberty',self.config())
+        self.assertEqual(self.session.client.download_activity.call_count,before)
     def test_legacy_reference_migrates_to_one_route_and_signout_clears_it(self):
         self.session.route_assign('liberty','easy','1','2026-10-21',self.config())
         route=next(r for r in self.session.route_book(self.config())['routes'] if r['id']=='liberty')
@@ -278,6 +318,7 @@ class RouteBackendV2Test(unittest.TestCase):
         self.session.logout()
         self.assertTrue(all(r['reference'] is None for r in self.session.route_book(self.config())['routes']))
     def test_legacy_work_only_reference_migrates_to_whole_reference_length_and_time(self):
+        self.session.cache.db.execute("DELETE FROM details WHERE id='1' AND kind='terrain_v1'")
         old=dict(id='1',title='Old work reference',date='2026-10-21',distance=2000,duration=600,interval=True,gain=0,loss=0,fingerprint=self.session.cache.db.execute("SELECT fingerprint FROM runs WHERE id='1'").fetchone()[0])
         from training_routes import configuration
         routes=configuration(self.session.cache);next(r for r in routes if r['id']=='liberty')['references']['intervals']=old

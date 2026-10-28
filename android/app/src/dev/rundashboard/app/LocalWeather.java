@@ -15,9 +15,12 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.ArrayList;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Future;
+import java.util.function.Consumer;
 import org.json.JSONObject;
 
 /** A bounded, cancellable foreground lookup. Coordinates are not stored or logged. */
@@ -25,69 +28,94 @@ final class LocalWeather {
     interface Listener {void complete(WeatherData data,String error);}
     private final LocationManager manager;
     private final Handler main=new Handler(Looper.getMainLooper());
-    private final ExecutorService network=Executors.newSingleThreadExecutor();
-    private CancellationSignal cancellation;
-    private LocationListener locationListener;
-    private Future<?> task;
-    private volatile HttpURLConnection connection;
+    // A cancelled DNS/socket operation can take time to unwind. One retry may
+    // proceed independently, without an unbounded queue of abandoned lookups.
+    private final ThreadPoolExecutor network=new ThreadPoolExecutor(0,2,30,TimeUnit.SECONDS,new SynchronousQueue<>());
+    private final WeatherLocation locator=new WeatherLocation();
+    private Fetch fetch;
     private Runnable timeout;
     private Listener listener;
+    private Runnable stageChanged;
     private int generation;
-    private boolean running,fetching;
+    private boolean running,locationFailure;
+    private String status="Finding phone location…";
     LocalWeather(Context context){manager=(LocationManager)context.getApplicationContext().getSystemService(Context.LOCATION_SERVICE);}
     boolean running(){return running;}
-    void request(Listener listener){
-        cancel();this.listener=listener;running=true;final int request=generation;
-        timeout=()->finish(request,null,"Couldn't get local weather in time. Edit the fields or try again.");main.postDelayed(timeout,30000);
-        try{
-            if(manager==null)throw new IllegalStateException();
-            String provider=null;
-            for(String candidate:new String[]{"fused",LocationManager.NETWORK_PROVIDER}){
-                if(manager.getAllProviders().contains(candidate)&&manager.isProviderEnabled(candidate)){provider=candidate;break;}
+    boolean needsLocationSettings(){return locationFailure;}
+    String status(){return status;}
+    void request(Listener listener,Runnable stageChanged){
+        cancel();this.listener=listener;this.stageChanged=stageChanged;running=true;locationFailure=false;final int request=generation;
+        stage("Finding phone location…");
+        locator.request(new AndroidLocation(),(delay,action)->{main.postDelayed(action,delay);return ()->main.removeCallbacks(action);},(fix,error)->{
+            if(request!=generation||!running)return;
+            if(fix==null){locationFailure=true;finish(request,null,error);return;}
+            load(request,fix);
+        });
+    }
+    private void stage(String value){status=value;if(stageChanged!=null)stageChanged.run();}
+    private WeatherLocation.Fix fix(Location location){
+        return location==null?null:new WeatherLocation.Fix(location.getLatitude(),location.getLongitude(),
+            (SystemClock.elapsedRealtimeNanos()-location.getElapsedRealtimeNanos())/1000000,location.getAccuracy());
+    }
+    private final class AndroidLocation implements WeatherLocation.Source {
+        public boolean enabled(){
+            if(manager==null)return false;
+            if(Build.VERSION.SDK_INT>=28)return manager.isLocationEnabled();
+            for(String provider:manager.getAllProviders())if(manager.isProviderEnabled(provider))return true;
+            return false;
+        }
+        public String[] providers(){
+            ArrayList<String> result=new ArrayList<>();
+            for(String provider:new String[]{LocationManager.NETWORK_PROVIDER,"fused"}){
+                try{if(manager.getAllProviders().contains(provider)&&manager.isProviderEnabled(provider))result.add(provider);}catch(RuntimeException ignored){}
             }
-            if(provider==null){finish(request,null,"Turn on phone location to use local weather. You can also edit the fields.");return;}
-            Location saved=manager.getLastKnownLocation(provider);
-            if(usable(saved)){load(request,saved);return;}
+            return result.toArray(new String[0]);
+        }
+        public String[] cachedProviders(){return manager.getProviders(true).toArray(new String[0]);}
+        public WeatherLocation.Fix lastKnown(String provider){return fix(manager.getLastKnownLocation(provider));}
+        public WeatherLocation.Task current(String provider,Consumer<WeatherLocation.Fix> callback){
             if(Build.VERSION.SDK_INT>=30){
-                cancellation=new CancellationSignal();
-                manager.getCurrentLocation(provider,cancellation,command->main.post(command),location->{
-                    if(request!=generation||fetching)return;
-                    if(usable(location))load(request,location);else finish(request,null,"Couldn't get a recent location. Try again or edit the fields.");
-                });
-            }else{
-                locationListener=new LocationListener(){
-                    public void onLocationChanged(Location location){if(usable(location))load(request,location);}
-                    public void onProviderDisabled(String provider){finish(request,null,"Phone location is off. Edit the fields or enable location.");}
-                    public void onProviderEnabled(String provider){}
-                    public void onStatusChanged(String provider,int status,Bundle extras){}
-                };
-                manager.requestSingleUpdate(provider,locationListener,Looper.getMainLooper());
+                CancellationSignal cancellation=new CancellationSignal();
+                manager.getCurrentLocation(provider,cancellation,command->main.post(command),location->callback.accept(fix(location)));
+                return cancellation::cancel;
             }
-        }catch(SecurityException error){finish(request,null,"Allow approximate location to use local weather.");}
-        catch(Exception error){finish(request,null,"Location unavailable. Try again or edit the fields.");}
+            LocationListener listener=new LocationListener(){
+                public void onLocationChanged(Location location){callback.accept(fix(location));}
+                public void onProviderDisabled(String provider){callback.accept(null);}
+                public void onProviderEnabled(String provider){}
+                public void onStatusChanged(String provider,int status,Bundle extras){}
+            };
+            manager.requestSingleUpdate(provider,listener,Looper.getMainLooper());
+            return ()->manager.removeUpdates(listener);
+        }
     }
-    private boolean usable(Location location){
-        return location!=null&&Double.isFinite(location.getLatitude())&&Double.isFinite(location.getLongitude())&&Math.abs(location.getLatitude())<=90&&Math.abs(location.getLongitude())<=180
-            &&WeatherData.freshLocation((SystemClock.elapsedRealtimeNanos()-location.getElapsedRealtimeNanos())/1000000,location.getAccuracy());
+    private void load(int request,WeatherLocation.Fix location){
+        if(request!=generation||!running)return;
+        stage("Downloading local weather…");
+        // The HTTP budget starts after location succeeds, so a slower fix does
+        // not consume the time available to download the forecast.
+        timeout=()->finish(request,null,"Weather download timed out. Check your internet connection, then retry.");main.postDelayed(timeout,25000);
+        fetch=new Fetch(request,WeatherData.url(location.latitude,location.longitude));
+        try{fetch.future=network.submit(fetch);}
+        catch(java.util.concurrent.RejectedExecutionException error){finish(request,null,"A previous weather connection is still closing. Try again shortly.");}
     }
-    private void stopLocation(){
-        if(cancellation!=null){cancellation.cancel();cancellation=null;}
-        if(locationListener!=null){try{manager.removeUpdates(locationListener);}catch(Exception ignored){}locationListener=null;}
-    }
-    private void load(int request,Location location){
-        if(request!=generation||!running||fetching)return;fetching=true;stopLocation();
-        final String address=WeatherData.url(location.getLatitude(),location.getLongitude());
-        task=network.submit(()->{
+    private final class Fetch implements Runnable {
+        final int request;final String address;volatile HttpURLConnection connection;volatile boolean cancelled;Future<?> future;
+        Fetch(int request,String address){this.request=request;this.address=address;}
+        void cancel(){cancelled=true;if(future!=null)future.cancel(true);HttpURLConnection current=connection;if(current!=null)current.disconnect();}
+        @Override public void run(){
             HttpURLConnection http=null;
             try{
+                if(cancelled)return;
                 http=(HttpURLConnection)new URL(address).openConnection();connection=http;
+                if(cancelled)return;
                 http.setConnectTimeout(8000);http.setReadTimeout(10000);http.setInstanceFollowRedirects(false);http.setUseCaches(false);
-                http.setRequestProperty("Accept","application/json");http.setRequestProperty("User-Agent","RunDashboard/0.19");
+                http.setRequestProperty("Accept","application/json");http.setRequestProperty("User-Agent","RunDashboard");
                 if(http.getResponseCode()!=200)throw new java.io.IOException();
                 ByteArrayOutputStream bytes=new ByteArrayOutputStream();
                 try(InputStream input=http.getInputStream()){
                     byte[] buffer=new byte[2048];int count;
-                    while((count=input.read(buffer))!=-1){if(bytes.size()+count>65536)throw new java.io.IOException();bytes.write(buffer,0,count);}
+                    while((count=input.read(buffer))!=-1){if(cancelled)return;if(bytes.size()+count>65536)throw new java.io.IOException();bytes.write(buffer,0,count);}
                 }
                 JSONObject response=new JSONObject(new String(bytes.toByteArray(),StandardCharsets.UTF_8));
                 JSONObject units=response.getJSONObject("current_units"),current=response.getJSONObject("current");
@@ -98,15 +126,15 @@ final class LocalWeather {
                 String reason=error instanceof IllegalArgumentException?error.getMessage():"Couldn't download local weather. Check your connection or edit the fields.";
                 main.post(()->finish(request,null,reason));
             }finally{if(http!=null)http.disconnect();connection=null;}
-        });
+        }
     }
     private void finish(int request,WeatherData data,String error){
         if(request!=generation||!running)return;Listener callback=listener;cancel();if(callback!=null)callback.complete(data,error);
     }
     void cancel(){
-        generation++;running=fetching=false;listener=null;stopLocation();
+        generation++;running=false;listener=null;stageChanged=null;locator.cancel();
         if(timeout!=null){main.removeCallbacks(timeout);timeout=null;}
-        if(task!=null){task.cancel(true);task=null;}HttpURLConnection http=connection;if(http!=null)http.disconnect();
+        if(fetch!=null){fetch.cancel();fetch=null;}
     }
     void close(){cancel();network.shutdownNow();}
 }

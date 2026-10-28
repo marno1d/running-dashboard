@@ -1,5 +1,7 @@
 """Coverage counts describe completed work, including successful empty responses."""
 from web_sources import terrain
+from route_terrain import cached_states
+from gear_sync import coverage as gear_coverage
 
 
 def coverage(cache,rows,start,end,settings):
@@ -8,9 +10,9 @@ def coverage(cache,rows,start,end,settings):
         done=sum(r['id'] in saved for r in eligible)
         return dict(done=done,total=len(eligible),pending=len(eligible)-done)
     outdoor=[r for r in rows if r.get('activity_type') in terrain.OUTDOOR_ELEVATION_TYPES]
-    saved=cache.all_details('terrain_v1')
-    ready=sum((saved.get(r['id']) or {}).get('status')=='ok' for r in outdoor)
-    skipped=sum((saved.get(r['id']) or {}).get('status')=='skipped' for r in outdoor)
+    saved=cached_states(cache)
+    ready=sum(saved.get(r['id'])==('ok',True) for r in outdoor)
+    skipped=sum(saved.get(r['id'])==('skipped',True) for r in outdoor)
     from datetime import date
     days=(date.fromisoformat(end)-date.fromisoformat(start)).days+1
     recovered=sum(len(cache.daily(start,end,k)) for k in ('sleep','rhr','hrv'))
@@ -21,4 +23,5 @@ def coverage(cache,rows,start,end,settings):
                 recovery=dict(done=recovered,total=days*3,pending=days*3-recovered),
                 hr_recordings=counts(easy,'hr_histogram_v1'),interval_recordings=counts(intervals,'interval_fit_v1'),
                 trial_recordings=counts(trials,'effort_v1'),weather=counts([r for r in rows if r.get('is_run')],'weather_v1'),
+                gear=gear_coverage(cache,rows,settings.get('include_gear',False)),
                 summaries_complete=not cache.missing(start,end))

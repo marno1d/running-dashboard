@@ -77,7 +77,7 @@ class SourceParityTest(unittest.TestCase):
         self.assertIn('KPVU',result['source'])
         self.assertIn('garmin',result['source'].lower())
 
-    def test_terrain_uses_web_sampling_and_retains_only_aggregates(self):
+    def test_terrain_uses_web_sampling_and_saves_heights_without_geographic_coordinates(self):
         start=datetime(2026,10,1,12)
         route=[dict(timestamp=start+timedelta(seconds=i*10),lat=40+i*.0001,lng=-111,distanceMeters=i*100) for i in range(4)]
         def profile(samples,args):
@@ -89,6 +89,11 @@ class SourceParityTest(unittest.TestCase):
         self.assertEqual(result['samples'],5)
         for banned in ('profile','lat','lng','position_lat','timestamp'):
             self.assertNotIn(banned,result)
+        self.assertEqual(len(result['route']['heights']),result['samples'])
+        self.assertEqual(len(result['route']['profile']),result['samples'])
+        self.assertTrue(result['route']['track'])
+        for banned in ('"lat"','"lng"','"position_lat"','"timestamp"'):
+            self.assertNotIn(banned,json.dumps(result))
         self.assertIsNotNone(result['work_gain'])
 
     def test_indoor_terrain_is_skipped_without_querying_coordinates(self):

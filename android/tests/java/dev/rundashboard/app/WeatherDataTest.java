@@ -17,8 +17,8 @@ public final class WeatherDataTest {
         rejected(()->new WeatherData(50,50,0,now));
         rejected(()->new WeatherData(50,50,now-2*WeatherPolicy.HOUR-1,now));
         rejected(()->new WeatherData(50,50,now+15*60*1000+1,now));
-        check(WeatherData.freshLocation(0,2000));check(WeatherData.freshLocation(300000,20000));
-        check(!WeatherData.freshLocation(300001,2000));check(!WeatherData.freshLocation(-1,2000));
+        check(WeatherData.freshLocation(0,2000));check(WeatherData.freshLocation(900000,20000));
+        check(!WeatherData.freshLocation(900001,2000));check(!WeatherData.freshLocation(-1,2000));
         check(!WeatherData.freshLocation(0,0));check(!WeatherData.freshLocation(0,20001));check(!WeatherData.freshLocation(0,Float.NaN));
         Locale previous=Locale.getDefault();
         try{

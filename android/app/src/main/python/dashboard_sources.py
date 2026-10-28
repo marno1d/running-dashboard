@@ -80,9 +80,14 @@ def terrain_summary(raw, activity, request_json=None):
     stream.seek(0)
     work = terrain.profile_in_windows(profile,terrain.active_lap_windows_from_fit(stream))
     active = terrain.summarize_profile(work,1.0)
-    return dict(status='ok',source='opentopodata:'+terrain.DEFAULT_DATASET,
+    source='opentopodata:'+terrain.DEFAULT_DATASET
+    result=dict(status='ok',source=source,
                 elevation_gain=summary['elevationGainMeters'],elevation_loss=summary['elevationLossMeters'],
                 work_gain=active['elevationGainMeters'],work_loss=active['elevationLossMeters'],samples=len(profile))
+    from route_terrain import build
+    try:result['route']=build(profile,route,source)
+    except ValueError:pass  # Keep usable aggregate metrics; route selection requires a complete profile.
+    return result
 
 
 def merge_weather(garmin, station):

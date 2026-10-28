@@ -34,7 +34,11 @@ final class BackendRuntime {
     static JSONObject invoke(Context context,String operation,Object... args) throws Exception {
         Object[] callArgs=new Object[args.length+1];
         callArgs[0]=operation;System.arraycopy(args,0,callArgs,1,args.length);
-        JSONObject result=new JSONObject(backend.callAttr("call",callArgs).toString());
+        AppErrorLog.event("backend."+operation+".start");
+        String encoded=backend.callAttr("call",callArgs).toString();
+        AppErrorLog.event("backend."+operation+".bytes_"+encoded.length());
+        JSONObject result=new JSONObject(encoded);
+        if(!result.optBoolean("ok"))AppErrorLog.event("backend."+operation+".failed");
         if(result.optBoolean("ok")&&result.optBoolean("authenticated")&&!result.isNull("tokens"))
             new SessionStore(context.getApplicationContext()).save(result.getJSONObject("tokens"));
         return result;

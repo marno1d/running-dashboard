@@ -81,9 +81,10 @@ def phases_for(settings,kind,easy_pace,work_pace=None):
     return phases
 
 
-def simulate(path,phases,settings,fixed_distance=None):
+def simulate(path,phases,settings,fixed_distance=None,collect_splits=False):
     from dashboard_metrics import upcoming_pace
     position=0;timeline=[];work_distance=work_time=work_gain=work_loss=0
+    pieces=[[0,0]];total_elapsed=0
     for phase in phases:
         start=position;remaining=phase['duration'];elapsed=0
         while remaining>1e-7:
@@ -96,22 +97,40 @@ def simulate(path,phases,settings,fixed_distance=None):
             dt=step/1000*pace
             fraction=1 if fixed_distance is not None else min(1,remaining/dt)
             position+=step*fraction;elapsed+=dt*fraction;remaining-=dt*fraction
+            if collect_splits:
+                total_elapsed+=dt*fraction;pieces.append([position,total_elapsed])
             if fixed_distance is not None and position>=fixed_distance-1e-7:break
         gain,loss=path.delta(start,position)
-        entry=dict(kind=phase['kind'],start=start,end=position,duration=elapsed,gain=gain/.3048,loss=loss/.3048)
+        entry=dict(kind=phase['kind'],base_pace=phase['base_pace'],start=start,end=position,distance=position-start,duration=elapsed,
+            pace=elapsed/(position-start)*1000 if position>start else None,gain=gain/.3048,loss=loss/.3048)
         if 'rep' in phase:entry['rep']=phase['rep']
         timeline.append(entry)
         if phase['kind']=='work':
             work_distance+=position-start;work_time+=elapsed;work_gain+=gain/.3048;work_loss+=loss/.3048
     gain,loss=path.delta(0,position);duration=sum(p['duration'] for p in timeline)
-    return dict(distance=position,duration=duration,gain=gain/.3048,loss=loss/.3048,pace=duration/position*1000 if position else None,
+    result=dict(distance=position,duration=duration,gain=gain/.3048,loss=loss/.3048,pace=duration/position*1000 if position else None,
                 work_distance=work_distance,work_duration=work_time,work_gain=work_gain,work_loss=work_loss,
                 work_pace=work_time/work_distance*1000 if work_distance else None,turnaround=path.turn if path.shape=='out_back' else None,
-                extrapolated=path.beyond_reference(position),phases=timeline)
+                extrapolated=path.beyond_reference(position),phases=timeline,
+                trace_conditions={key:settings.get(key) for key in ('target_temperature','target_humidity')})
+    if collect_splits and position>0:
+        mile=1609.344;distances=[p[0] for p in pieces]
+        def time_at(distance):
+            i=max(0,min(len(pieces)-2,bisect_right(distances,distance)-1));a,b=pieces[i:i+2]
+            return a[1]+(b[1]-a[1])*(distance-a[0])/(b[0]-a[0])
+        splits=[];start=0;previous=0
+        while start<position-.001:
+            end=min(position,(len(splits)+1)*mile);stamp=time_at(end);seconds=stamp-previous;up,down=path.delta(start,end)
+            splits.append(dict(index=len(splits)+1,start=start,end=end,distance=end-start,duration=seconds,
+                pace=seconds/(end-start)*1000,gain=up/.3048,loss=down/.3048,partial=end-start<mile-.01))
+            start=end;previous=stamp
+        result['splits']=splits
+    return result
 
 
 def project(profile,shape,extent,reverse,phases,settings,fixed_distance=None):
-    if shape!='out_back':return simulate(RoutePath(profile,shape,extent,reverse),phases,settings,fixed_distance)
+    collect=len(phases)==1 and phases[0]['kind']=='easy'
+    if shape!='out_back':return simulate(RoutePath(profile,shape,extent,reverse),phases,settings,fixed_distance,collect)
     if fixed_distance is not None:
         return simulate(RoutePath(profile,shape,extent,reverse,turn=fixed_distance/2),phases,settings,fixed_distance)
     lo=1;hi=max(100,sum(p['duration']/p['base_pace']*1000 for p in phases))
@@ -122,10 +141,31 @@ def project(profile,shape,extent,reverse,phases,settings,fixed_distance=None):
     for _ in range(20):
         turn=(lo+hi)/2;plan=simulate(RoutePath(profile,shape,extent,reverse,turn=turn),phases,settings)
         error=plan['distance']-2*turn
-        if abs(error)<.5:return plan
+        if abs(error)<.5:return simulate(RoutePath(profile,shape,extent,reverse,turn=turn),phases,settings,collect_splits=collect)
         if error>0:lo=turn
         else:hi=turn
-    return plan
+    return simulate(RoutePath(profile,shape,extent,reverse,turn=turn),phases,settings,collect_splits=collect)
+
+
+def course_profile(route,data):
+    """Combine complete recorded loops into one closed, representative lap."""
+    if route['shape']!='loop':return data['profile']
+    full=RoutePath(data['profile'],reverse=route.get('reverse',False));extent=min(full.length,float(route.get('extent') or full.length))
+    count=max(1,int((full.length+.01)/extent))
+    # A fixed distance grid avoids magnifying different sampling positions in laps.
+    steps=max(2,min(1000,math.ceil(extent/25)));profile=[]
+    for i in range(steps+1):
+        distance=extent*i/steps;up=down=0
+        for lap in range(count):
+            a,b=full.delta(lap*extent,lap*extent+distance);up+=a;down+=b
+        profile.append([distance,up/count,down/count])
+    up,down=profile[-1][1:];balanced=(up+down)/2
+    if up>0 and down>0:
+        profile=[[d,a*balanced/up,b*balanced/down] for d,a,b in profile]
+    else:
+        # A recorded loop containing only drift cannot supply a reliable hill shape.
+        profile=[[d,balanced*d/extent,balanced*d/extent] for d,_,_ in profile]
+    return profile
 
 
 def infer_workout(data,kind,settings,identity):
@@ -153,9 +193,11 @@ def infer_workout(data,kind,settings,identity):
 def apply_route(target,route,data,settings):
     """Only aggregate results cross into the dashboard; profiles stay in private cache."""
     from dashboard_metrics import MILE,positive
-    target.update(route_engine=2,route_name=route['name'],route_surface=route['surface'],route_shape=route['shape'])
+    target.update(route_engine=4,route_name=route['name'],route_surface=route['surface'],route_shape=route['shape'])
     profile=data.get('profile',[])
     if len(profile)<2:raise ValueError('Open Routes and select this route once to load its recorded elevation profile.')
+    profile=course_profile(route,data)
+    reverse=route.get('reverse',False) if route['shape']!='loop' else False
     easy=next((p for p in target.get('easy',[]) if p['surface']==route['surface'] and not p.get('error')),None)
     easy_pace=easy.get('base_pace') if easy else None
     plans=[];by_kind={r['category']:r for r in target.get('rows',[])}
@@ -163,9 +205,11 @@ def apply_route(target,route,data,settings):
         row=by_kind.get(kind);definition=workout_definition(settings,kind)
         try:
             phases=phases_for(settings,kind,easy_pace,row.get('base_pace') if row else None)
-            plan=project(profile,route['shape'],route['extent'],route.get('reverse',False),phases,settings)
+            plan=project(profile,route['shape'],route['extent'],reverse,phases,settings)
         except ValueError as error:plan=dict(error=str(error))
-        plan.update(kind=kind,surface=route['surface']);plans.append(plan)
+        plan.update(kind=kind,surface=route['surface'],route_id=route.get('id',''),
+                    reference_id=(route.get('reference') or {}).get('id',''),
+                    course={key:route.get(key) for key in ('shape','extent','reverse')});plans.append(plan)
         if row is not None:
             row.update(reps=f"{definition['reps']} × {definition['work']:g} min",pace=plan.get('work_pace'),distance_basis=plan.get('work_distance'))
             row['delta']=row['pace']-row['base_pace'] if row['pace'] else None
@@ -175,11 +219,57 @@ def apply_route(target,route,data,settings):
     if custom:distances.append(custom*MILE)
     for race,distance in zip(target.get('races',[]),distances):
         base=race['base_duration']/distance*1000
-        plan=project(profile,route['shape'],route['extent'],route.get('reverse',False),[dict(kind='race',duration=1e12,base_pace=base)],settings,distance)
+        plan=project(profile,route['shape'],route['extent'],reverse,[dict(kind='race',duration=1e12,base_pace=base)],settings,distance)
         race.update(duration=plan['duration'],pace=plan['pace'],gain=plan['gain'],loss=plan['loss'],extrapolated=plan['extrapolated'],distance=distance)
 
 
+def apply_manual_plans(target,settings):
+    """Workout details for uniform manually entered rates, with both easy surfaces."""
+    from dashboard_metrics import MILE,number
+    gain=number(settings.get('target_gain_per_mile')) or 0;loss=number(settings.get('target_loss_per_mile')) or 0
+    profile=[[0,0,0],[MILE,gain*.3048,loss*.3048]]
+    plans=[];rows={r['category']:r for r in target.get('rows',[])}
+    surfaces={r['surface']:r for r in target.get('easy',[]) if not r.get('error')}
+    for kind,surface in [(kind,surface) for kind in ('easy','easy_long') for surface in ('road','trail')]+[(kind,'road') for kind in ('short','medium','long')]:
+        easy=surfaces.get(surface,{});row=rows.get(kind,{})
+        try:
+            phases=phases_for(settings,kind,easy.get('base_pace'),row.get('base_pace'))
+            plan=project(profile,'one_way',MILE,False,phases,settings);plan['extrapolated']=False
+        except ValueError as error:plan=dict(error=str(error))
+        plan.update(kind=kind,surface=surface);plans.append(plan)
+    target['route_plans']=plans
+
+
+def average_rates(route,data):
+    """Average the course; combine complete loops and remove loop endpoint drift."""
+    from dashboard_metrics import MILE
+    path=RoutePath(data.get('profile',[]),route['shape'],route.get('extent'),route.get('reverse',False))
+    distance=path.extent*(2 if route['shape']=='out_back' else 1)
+    gain,loss=path.delta(0,distance)
+    if route['shape']=='loop':
+        count=max(1,int((path.length+.01)/path.extent))
+        full=RoutePath(data['profile'],reverse=route.get('reverse',False))
+        gain,loss=full.delta(0,min(path.length,count*path.extent))
+        distance=path.extent*count
+        gain=loss=(gain+loss)/2
+    return dict(gain_per_mile=round(gain/.3048/(distance/MILE),1),
+                loss_per_mile=round(loss/.3048/(distance/MILE),1))
+
+
+def apply_average_route(target,settings):
+    """Project workout durations over the exact average rates visible in Conditions."""
+    from dashboard_metrics import MILE,number
+    gain=number(settings.get('target_gain_per_mile')) or 0
+    loss=number(settings.get('target_loss_per_mile')) or 0
+    route=dict(name=settings.get('target_route_name','Route'),surface=settings.get('target_route_surface','road'),
+               shape='loop',extent=MILE,reverse=False)
+    data=dict(profile=[[0,0,0],[MILE,gain*.3048,loss*.3048]])
+    apply_route(target,route,data,settings)
+    target.update(route_engine=3,route_shape=settings.get('target_route_shape','loop'),
+                  route_gain_per_mile=gain,route_loss_per_mile=loss)
+
+
 def invalidate(target,error):
-    target.update(route_engine=2,route_error=str(error),route_plans=[])
+    target.update(route_engine=4,route_error=str(error),route_plans=[])
     for row in target.get('rows',[]):row['pace']=None
     for row in target.get('races',[]):row.update(pace=None,duration=None)

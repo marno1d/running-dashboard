@@ -5,8 +5,68 @@ Chaquopy 17. Garmin sign-in and downloads run inside the APK on a background
 thread. Termux is used to build and install updates.
 
 The Android source originally developed in `run_dashboard` now lives here in the
-`running-dashboard` repository. Version **0.22.1** brings the web dashboard's
+`running-dashboard` repository. Version **0.30.1** brings the web dashboard's
 data sources, calibration history, and presentation into the native Targets, Trends, Sessions, and Profile screens, in that navigation order. Targets is the launch and Back destination.
+
+## Local route review
+
+Normal sync now downloads Garmin gear names and their linked activity IDs.
+**Profile → Download gear linked to activities** is enabled by default. The first
+sync backfills gear for all saved history; later syncs fetch links for new sessions.
+Explicit **Sync now** also refreshes historical tags, including changes made later
+in Garmin. Other online checks reuse gear metadata for up to six hours. The app
+reads the gear catalog and paginated activity lists per item, without downloading
+original recordings or terrain again. Completed gear items survive pause/restart;
+an interrupted item's small list restarts. Failed checks remain unknown, distinct
+from successfully checked sessions with no gear. Gear progress appears in sync
+details, and all gear caches are cleared on sign-out.
+
+Saved gear names, IDs, types, statuses and completion timestamps are included in
+the explicit local sessions/routes and dashboard comparison exports. Account
+profile fields and raw gear responses are excluded. This supports comparing
+ice-bandana sessions with other hot runs; no cooling effect is assumed in target
+calculations. Gear syncing does not change the book's temperature/elevation rules.
+Custom Garmin gear names fall back to `customMakeModel` when `displayName` is
+missing. Sharing reports used/invalid links directly and logs only the HTTP
+status code; a receiver page hides its share button after a successful export.
+
+Expanded route-based target cards include a linked GPS drawing, elevation chart,
+and accessible distance slider. Scrubbing highlights the current rep, warm-up,
+cooldown, recovery or easy mile split, with the predicted pace for that 100 m
+terrain section. Tapping a detail row selects its step. Walking remains hidden
+from the detail list but is represented on the course. Drawings load only when a
+card opens, using saved terrain without network requests; they never enter the
+main dashboard/chart response. Beyond a one-way reference or an extended
+out-and-back, estimated terrain is labeled and GPS positions are omitted.
+Run `python scripts/check_workout_trace.py` to check native cursor math.
+
+For technical errors, run `.venv/bin/python scripts/receive_diagnostics.py` and
+open its local page. Install the update, then open and explicitly share the error
+report. **Profile → Error report** also displays it. The diagnostics activity
+opens independently of Garmin/Python/dashboard loading. The app keeps a bounded
+private file of Java error classes/stack locations and recent technical operation
+names, excluding exception messages, credentials, coordinates and workout data.
+Android 11+ also supplies recent process-exit reasons and memory figures. Old
+uncaptured Java stack traces cannot be recovered retroactively. Nothing is sent
+until the user confirms sharing to the local capability URL. Reports are saved
+privately in ignored `.state/app-diagnostics.json` and `.state/diagnostics/`.
+
+Run `.venv/bin/python scripts/receive_route_review.py --minutes 60` from `android`
+and open its local page on the phone. Install the linked APK, then choose
+**Share sessions and routes** and confirm in the app. This reads all saved session
+summaries, cached lap/terrain/weather metrics, activity gear, target settings, route configurations,
+configured reference elevation profiles, and relative route drawings. It does not
+download more history or recordings. Credentials, tokens, geographic GPS coordinates,
+and unrelated daily recovery data are excluded. Route shapes and names can still
+identify familiar places; this is an explicit local review, separate from the
+existing comparison export.
+
+The receiver accepts one export using a temporary capability URL bound to
+127.0.0.1. It saves `.state/route-review-snapshot.json` and an initial elevation
+comparison in `.state/route-review-report.md`, outside version control with private
+file permissions. Profile elevations and activity totals are metres; route reference
+summary elevations are feet; condition rates are feet per mile. These units are
+also recorded in the export.
 
 ## Material 3 interface
 
@@ -125,10 +185,23 @@ Tapping a session opens **Confirm route reference**. This compares GPS against
 that prospective selection, independently of the route's existing reference,
 and lists longer matching recordings by distance, longest first. Matches must
 cover at least 85% of the selected path's coarse GPS cells, allowing extensions
-well beyond the original route without matching an isolated path crossing. It checks up
-to five unchecked longer recordings initially; **Check 5 more longer recordings**
-continues from the largest unchecked ones and reuses previous checks. The screen
-shows how many longer recordings remain unchecked. **Keep original selection**
+well beyond the original route without matching an isolated path crossing.
+Cached matches appear first. **Scan all longer recordings** checks the remaining
+saved running history, longest first, with progress, live match updates and Pause.
+**Scan remaining longer recordings** reuses completed checks after a pause,
+connection interruption, screen close or process restart. Checks are shared across
+routes; GPS data already saved from normal recording sync is reused too.
+Discovery requests only a bounded Garmin details polyline (one chart sample,
+up to 2,000 GPS points) rather than a full original FIT. It prepares the session
+catalog once per scan and caches overlap scores, avoiding repeated chart/model
+calculations. Full FIT data is read only when an uncached session is selected as
+the elevation reference. This also makes missing list thumbnails lightweight.
+No-GPS results are cached; malformed/failed responses remain retryable. A network
+error or rate-limit response stops the scan while preserving completed checks.
+Garmin transfer time still depends on the connection; scans cover saved history,
+so sync more history first to include older sessions. The details parameters come
+from the pinned [Garmin client](https://github.com/cyberjunky/python-garminconnect).
+The screen shows how many longer recordings remain unchecked. **Keep original selection**
 and **Use this longer session** explicitly save the reference; going back leaves
 the existing reference intact. GPS matching and previews use the private Garmin
 cache, with no external map service.
@@ -196,11 +269,15 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   per-mile fields start at zero; old totals are never reinterpreted as rates.
   Choosing a route, resetting, or manually editing a rate clears the note.
   **Routes** beside Local weather now selects only a route. Shape, surface and one
-  full reference are configured separately in Profile. Route mode hides the manual
-  elevation-rate inputs; **Manual** restores them without losing their saved values.
-  Weather edits keep route selection. Every workout and race is laid onto the
-  selected route's measured distance/elevation profile, rather than applying one
-  average gain/loss rate to all distances. Tap an interval/easy target or race row
+  full reference are configured separately in Profile. The **+ft/mi** and **−ft/mi**
+  fields stay visible. Choosing a route fills its average gain and loss per mile,
+  rounded to one decimal place (for example, **45.7 ft/mi**). Manual edits also
+  save and display one decimal; clearing a rate becomes **0.0**. Predictions use
+  those exact rounded values, with no hidden extra precision. Editing either rate
+  clears the route association and uses the manually entered conditions. Weather
+  edits keep route selection. All workouts and races scale the same average rates
+  to their own distances; a shorter workout no longer picks individual hills from
+  the reference. Tap an interval/easy target or race row
   for its totals and, for workouts, the phase-by-phase breakdown. Interval tiles
   show work-only elevation. On a selected route, Easy and Easy long predictions
   use its Road or Trail 128 bpm model. Without sufficient matching easy/HR history,
@@ -225,6 +302,19 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   Local weather fills temperature and humidity using Open-Meteo's current model
   data and approximate Android location. The app asks for coarse foreground
   location when first needed on Targets; declining leaves manual editing available.
+  The lookup checks all accessible phone location caches and uses the newest fix
+  no older than 15 minutes with reported accuracy within 20 km. Without a recent
+  fix it requests the available network and fused providers together; a silent,
+  null or inaccessible provider cannot block the other. Location lookup has a
+  20-second deadline, separate from the subsequent 25-second weather-download
+  deadline. The status distinguishes **Finding phone location** from
+  **Downloading local weather**, and errors identify which stage failed.
+  A location failure offers **Location settings** and retries when returning from
+  phone settings. Cached coordinates are read from Android only for that lookup;
+  the app still stores no current-location coordinates and needs only coarse
+  foreground permission. Cancelled/late provider callbacks cannot start duplicate
+  weather downloads. A bounded second HTTP worker lets a manual retry proceed
+  while a cancelled socket/DNS operation is still unwinding.
   With access enabled, opening the app or Targets checks for an update, with at
   most one automatic lookup per ten minutes. Failed attempts count, and the
   cooldown and manual hold survive app restarts. Local weather can be tapped to
@@ -243,34 +333,86 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   Temperature, humidity, elevation gain/loss, equivalent race times, and an
   optional custom race distance use the web app's FVDOT and adjustment math.
 - **Profile → Routes** configures Lakeview Parkway (Provo), west to Jordan River
-  then south (SLC), Liberty Park (SLC), and Bonneville Shoreline (SLC). Each route
+  then south (SLC), Liberty Park (SLC), and Bonneville Shoreline (SLC) as initial routes.
+  **Manage routes → Add route** accepts a name and opens configuration for the new
+  route. Each list row has a labelled delete icon and confirmation. Custom and
+  starter routes can both be deleted; deleting the last route leaves an empty
+  list after restart. Names and reference changes appear when returning to the
+  manager. Deleting a route preserves its recorded sessions and shared GPS checks.
+  If it supplied the current conditions, its association is cleared while the
+  visible elevation rates remain as manual values. Custom routes support the
+  same session filters, GPS matching, shape/surface options and **Save route** action.
+  Each route
   has one full reference session, an Out-and-back / Loop / One-way shape, Road /
   Trail surface, and an optional reverse direction. Starting point follows the
   reference start, or its finish when reversed. GPS suggests a turnaround or loop
-  length; confirm/edit that distance once. A shorter out-and-back turns earlier
-  along the same outward leg, then reverses gain/loss on the return. Its turnaround
-  is solved from the complete planned duration, not half the original reference
-  or half the elapsed time. Loops repeat as needed. One-way runs and outward legs
-  beyond the measured extent use clearly labelled average-terrain extrapolation.
-  Reference suggestions rank GPS overlap and longer coverage, regardless of run
-  category. Check five more recordings to extend suggestions; existing checks
-  are reused. Normal recording sync builds profiles and suggestions without extra
-  download requests. Older per-category references migrate to the longest whole-run
-  reference (or longest remaining reference). An older cache may require one explicit
-  reread of that recording when selecting the route to obtain its elevation profile.
-  A reference needs GPS, distance and recorded altitude; aggregate totals alone
+  length; confirm/edit that distance once. A marker and distance slider show the
+  chosen turnaround/loop endpoint on the outline. Suggestions match the outward
+  GPS path against the return path, rather than using the farthest point in a
+  straight line. Nearby candidates are ranked by actual track alignment to avoid
+  picking an early point just inside the GPS tolerance. Saved relative geometry
+  can refine suggestions locally without downloading the reference again.
+  Ambiguous suggestions are labelled for review. Old radial guesses
+  are migrated once; explicitly saved distances in this version are preserved.
+  Route averages use that configured course:
+  an out-and-back includes the outward leg and its reversed return, loops average
+  complete recorded laps and balance ascent/descent for closure, and one-way uses
+  the measured extent. Reversing one-way direction swaps gain
+  and loss. The resulting average rates summarize the course in Conditions. A
+  selected-route chip shows the name/surface and an × to clear it. Elevation fields
+  are gray and read-only until the route is cleared; clearing keeps their current
+  values as manual rates. Reset preserves an active route and resets weather only.
+  Workouts and races follow the actual saved terrain profile rather than applying
+  the average rate uniformly. Out-and-back workouts turn early to fit their timed
+  duration; loops combine complete reference laps into one closed representative
+  elevation profile. Existing selected average-rate routes automatically use this
+  spatial calculation with their cached terrain. Longer GPS matches are shown by distance,
+  regardless of workout category. Scan all remaining saved recordings in one action;
+  existing checks are reused. Routes use downloaded OpenTopoData terrain elevations
+  with the same provider, sampling and accumulation policy as Sessions. Watch
+  altitude is not a route fallback. Terrain sync retains distance/cumulative
+  ascent/descent, original sampled terrain heights, and a relative GPS shape in
+  the private cache, so repeated selection works offline and later calculations
+  can reuse the heights. Geographic GPS coordinates are not retained in this
+  terrain profile. Dashboard sessions and chart points retain only the small
+  aggregate terrain metrics; detailed profiles never enter the Python-to-Java
+  dashboard response. Coverage and picker catalogs stream one recording at a time
+  and retain only status flags/cells, keeping memory bounded after a full backfill.
+  Card refresh moves focus off replaced cards before removing them.
+  Normal sync with terrain enabled backfills aggregate-only
+  caches for all outdoor sessions in the sync history. With full history enabled,
+  this includes older sessions outside the current chart range. Complete profiles
+  and known recordings without a usable route are reused. Terrain progress counts
+  only retained profiles as ready; every completed session is saved immediately,
+  so pause, service interruption, provider limits and retry resume the remaining
+  work. Failed rebuilds preserve older saved totals while their profile stays
+  pending. Routes reads only this cache: selecting, configuring and applying a
+  reference never starts a terrain download. References may be selected before
+  terrain is ready; the screen shows a pending-sync message until the profile is
+  saved, then **Save route** fills the corrected conditions. The separate download
+  control in Routes is removed. Old applied watch rates require selecting the route again; they do not
+  silently drive predictions. Older per-category references migrate to the longest whole-run
+  reference (or longest remaining reference).
+  A reference needs GPS, distance and a complete downloaded terrain profile; aggregate totals alone
   are insufficient. Missing or changed references require choosing a reference again.
+- **Target workout cards** show Short, Medium and Long average work pace, calculated
+  from total work time divided by total work distance. Tap for warm-up, each work
+  repetition and cooldown with pace, duration, distance and elevation. Walking
+  recoveries remain in the time/distance simulation and move later repetitions
+  along the route, but have no visible rows. Easy and Easy Long are separate cards
+  using their configured durations, the route surface's 128 bpm model, and whole-run
+  average pace. Tap for mile splits including the final partial mile. Split time,
+  distance and gain/loss sum to the workout totals. Without a selected route, the
+  two easy cards offer Road and Trail rows with splits for uniform manual rates.
 - **Profile → Workouts** defines Easy (45 min) and Easy long (80 min), plus warm-up,
   repetitions, work duration and cooldown for Short / Medium / Long. Initial interval
   defaults are 10×3, 6×5, and 3×10 minutes, each with 10 min warm-up and cooldown.
   Every repetition has exactly one minute of walking afterward, including the final
   rep. Walking pace starts at 20:00/mi and is configurable in the selected distance
   units. Warm-up and cooldown always use the route surface's estimated 128 bpm easy
-  pace. All phases advance along the route; only work phases determine interval
-  pace and work elevation. The native spatial model evaluates terrain in at most
-  100 m steps and solves out-and-back closure to approximately 0.5 m. Uphill and
-  downhill need not consume equal time. Local elevation effects and weather apply
-  once; walking uses its configured fixed pace. Recorded elevation is smoothed
+  pace. Phases scale elevation from the visible average rates; only work phases
+  determine interval pace and work elevation. Elevation effects and weather apply
+  once; walking uses its configured fixed pace. Recorded reference elevation is smoothed
   with nearby samples and a 3 m change threshold, stored as a bounded cumulative
   ascent/descent profile. Technical footing and other trail conditions are not modeled.
   **Use latest session** explicitly copies parameters from the latest matching run;
@@ -281,8 +423,9 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   Easy durations accept 5–360 min; interval plans are bounded to six hours.
   Route configurations, distance/elevation profiles and coarse location cells remain
   app-private and outside comparison/sample exports. Only calculated aggregate route
-  plans are exported. Web pace parity excludes the native spatial model while still
-  comparing its 5K basis. Raw FIT files are discarded; sign-out clears references,
+  plans and the applied rates are exported. Web pace parity compares the average
+  rates model and 5K basis; legacy spatial snapshots retain their original parity
+  exclusion. Raw FIT files are discarded; sign-out clears references,
   profiles and GPS cells. No map or elevation service receives this reference data.
 - Weekly recovery: sleep, resting HR, and HRV appear in three lanes with a
   shared date axis, or one expanded metric. Latest measured weekly averages and
@@ -517,6 +660,8 @@ successful refresh should end it. Leaving the app must cancel the lookup. Check
 updates while Garmin sync is running and verify target paces catch up afterward.
 `python scripts/check_weather_endpoint.py` optionally checks the live API contract
 using the provider's public Berlin example, never the phone's actual location.
+`check_conditions.py` also checks location-provider fallback, cache freshness,
+timeouts, cancellation and late callbacks using synthetic providers and a fake clock.
 For each chart legend, hide and restore every entry, then hide all entries and
 restore one. Expand a chart, zoom, and toggle a series: the view should stay put,
 hidden points should leave View data and point selection, and the card legend

@@ -11,7 +11,7 @@ SEEDS=(('lakeview','Lakeview Parkway · Provo'),('jordan','West → Jordan River
        ('liberty','Liberty Park · SLC'),('bonneville','Bonneville Shoreline · SLC'))
 
 
-def recording_data(raw):
+def recording_data(raw,include_profile=True):
     if not isinstance(raw,bytes) or len(raw)>30*1024*1024:raise ValueError('Missing recording')
     if zipfile.is_zipfile(io.BytesIO(raw)):
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -35,7 +35,7 @@ def recording_data(raw):
                 stamp=get('timestamp');alt=num(get('enhanced_altitude'))
                 if alt is None:alt=num(get('altitude'))
                 if isinstance(stamp,datetime) and alt is not None:altitudes.append((stamp,alt))
-                if distance is not None and distance>=0 and (not records or distance>records[-1][0]):records.append((distance,alt))
+                if include_profile and distance is not None and distance>=0 and (not records or distance>records[-1][0]):records.append((distance,alt))
             elif frame.name=='lap':
                 gain,loss=num(get('total_ascent')),num(get('total_descent'))
                 start,end=get('start_time'),get('timestamp')

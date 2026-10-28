@@ -10,6 +10,7 @@ from garminconnect import Garmin
 from best_effort import best_from_original
 from training_routes import recording_data
 from route_preview import route_from_original
+from route_terrain import complete as terrain_complete,metrics as terrain_metrics,cached_states
 from dashboard_sources import original_zip, station_weather, terrain_summary, merge_weather
 from web_sources import dashboard, terrain
 from sync_job import SyncJob,SyncPaused,TerrainRequests,TerrainDeferred
@@ -141,9 +142,9 @@ def sync_extras(client, cache, result, settings, refresh, report, activities=Non
     terrain_failures = 0
     indexed = {str(a['activityId']):a for a in activities or []}
     terrain_rows=[r for r in result['runs'] if r.get('activity_type') in terrain.OUTDOOR_ELEVATION_TYPES]
-    saved_terrain=cache.all_details('terrain_v1')
-    terrain_done=sum((saved_terrain.get(r['id']) or {}).get('status')=='ok' for r in terrain_rows)
-    terrain_skipped=sum((saved_terrain.get(r['id']) or {}).get('status')=='skipped' for r in terrain_rows)
+    saved_terrain=cached_states(cache)
+    terrain_done=sum(saved_terrain.get(r['id'])==('ok',True) for r in terrain_rows)
+    terrain_skipped=sum(saved_terrain.get(r['id'])==('skipped',True) for r in terrain_rows)
     for index,row in enumerate(result['runs']):
         job.checkpoint()
         identity = row['id']
@@ -159,7 +160,7 @@ def sync_extras(client, cache, result, settings, refresh, report, activities=Non
         want_trial = allow_download and not garmin_paused and not terrain_only and row['category']=='trial' and not have_trial
         activity = indexed.get(identity,dict(activityId=identity,activityType={'typeKey':row.get('activity_type','running')}))
         outdoor = terrain.type_key(activity) in terrain.OUTDOOR_ELEVATION_TYPES
-        want_terrain = allow_download and settings.get('include_terrain',False) and outdoor and not have_terrain and not garmin_paused and not terrain_paused
+        want_terrain = allow_download and settings.get('include_terrain',False) and outdoor and not terrain_complete(elevation) and not garmin_paused and not terrain_paused
         if want_terrain:
             try:provider.ready()
             except TerrainDeferred as error:
@@ -190,9 +191,10 @@ def sync_extras(client, cache, result, settings, refresh, report, activities=Non
                 if want_terrain:
                     report('Terrain · '+str(terrain_done)+'/'+str(len(terrain_rows))+' ready · '+row['date'],terrain_done+terrain_skipped,len(terrain_rows))
                     try:
-                        elevation = terrain_summary(raw,activity,request_json=provider)
-                        cache.save_detail(identity,'terrain_v1',elevation)
-                        if elevation.get('status')=='ok':terrain_done+=1
+                        downloaded = terrain_summary(raw,activity,request_json=provider)
+                        if not terrain_complete(downloaded):raise ValueError('Terrain profile incomplete')
+                        cache.save_detail(identity,'terrain_v1',downloaded);elevation=downloaded
+                        if downloaded.get('status')=='ok':terrain_done+=1
                         else:terrain_skipped+=1
                         report('Terrain · '+str(terrain_done)+'/'+str(len(terrain_rows))+' ready · '+str(terrain_skipped)+' without usable terrain',terrain_done+terrain_skipped,len(terrain_rows))
                     except (SyncPaused,TerrainDeferred):raise
@@ -210,7 +212,7 @@ def sync_extras(client, cache, result, settings, refresh, report, activities=Non
                 recording_failures += 1
             time.sleep(.2)
         if settings.get('include_terrain') and elevation and elevation.get('status')=='ok':
-            row['terrain'] = elevation
+            row['terrain'] = terrain_metrics(elevation)
         if not easy:
             continue
         total = sum(histogram.values()) if histogram else 0
@@ -225,7 +227,7 @@ def sync_extras(client, cache, result, settings, refresh, report, activities=Non
     if recording_failures:
         warnings.append(str(recording_failures)+' original recordings failed; refresh to retry.')
     if terrain_failures:
-        warnings.append(str(terrain_failures)+' terrain lookups failed; Garmin elevation is used until refresh.')
+        warnings.append(str(terrain_failures)+' terrain profiles could not update; saved elevations are kept. Sync again to retry.')
     weather = {}
     failures = 0
     for index,row in enumerate(result['runs']):

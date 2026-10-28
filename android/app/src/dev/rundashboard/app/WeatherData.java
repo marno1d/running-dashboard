@@ -18,5 +18,5 @@ final class WeatherData {
         // Send an approximate area, never the full location fix, a route, or an identifier.
         return String.format(Locale.ROOT,"https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&current=temperature_2m,relative_humidity_2m&temperature_unit=fahrenheit&timeformat=unixtime&forecast_days=1",latitude,longitude);
     }
-    static boolean freshLocation(long ageMillis,float accuracy){return ageMillis>=0&&ageMillis<=5*60*1000L&&Float.isFinite(accuracy)&&accuracy>0&&accuracy<=20000;}
+    static boolean freshLocation(long ageMillis,float accuracy){return ageMillis>=0&&ageMillis<=15*60*1000L&&Float.isFinite(accuracy)&&accuracy>0&&accuracy<=20000;}
 }

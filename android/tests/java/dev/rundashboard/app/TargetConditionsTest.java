@@ -11,6 +11,11 @@ public final class TargetConditionsTest {
         check(TargetConditions.valid(1,"100"));check(TargetConditions.valid(1,"0"));
         check(!TargetConditions.valid(1,"-1"));check(!TargetConditions.valid(1,"101"));
         for(int field=2;field<4;field++){check(TargetConditions.valid(field,"150.5"));check(!TargetConditions.valid(field,"-1"));}
+        check(TargetConditions.canonical(2,"45").equals("45.0"));check(TargetConditions.canonical(3,"5.67").equals("5.7"));
+        check(TargetConditions.canonical(2,"").equals("0.0"));check(TargetConditions.canonical(3,"-0").equals("0.0"));
+        check(TargetConditions.canonical(2,"0.01").equals("0.0"));check(TargetConditions.canonical(1,"45.67").equals("45.67"));
+        java.util.Locale previous=java.util.Locale.getDefault();java.util.Locale.setDefault(java.util.Locale.GERMANY);
+        check(TargetConditions.canonical(2,"55.1").equals("55.1"));java.util.Locale.setDefault(previous);
         long now=1700000000000L,until=now+WeatherPolicy.HOUR;
         check(WeatherPolicy.held(now,until));check(WeatherPolicy.held(until-1,until));check(!WeatherPolicy.held(until,until));
         check(!WeatherPolicy.shouldRefresh(now,until,0,0)); // Reopening the app cannot replace a manual edit.

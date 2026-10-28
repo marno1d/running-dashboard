@@ -138,8 +138,8 @@ def differences(native,web,case):
     if web_targets:
         check('targets.seconds',native_targets.get('seconds'),web_targets['seconds'],.5)
         check('targets.vdot',native_targets.get('vdot'),web_targets['vdot'],.05)
-        if native_targets.get('route_engine')!=2:
-            for a,b in zip(native_targets.get('rows',[]),web_targets['rows']):check('targets.'+a['category']+'.pace',a['pace']*1.609344,b['pace'],.5)
+        if native_targets.get('route_engine') not in (2,4):
+            for a,b in zip(native_targets.get('rows',[]),web_targets['rows']):check('targets.'+a['category']+'.pace',a['pace']*1.609344 if a.get('pace') is not None else None,b['pace'],.5)
     return results
 
 

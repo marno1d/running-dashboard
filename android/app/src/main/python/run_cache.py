@@ -17,6 +17,7 @@ class RunCache:
         if path:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path) if path else ':memory:')
+        self._terrain_states=None
         old = self.db.execute("SELECT 1 FROM sqlite_master WHERE name='coverage'").fetchone()
         version = self.db.execute('PRAGMA user_version').fetchone()[0]
         self.db.execute('CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, day TEXT, body TEXT, fingerprint TEXT)')
@@ -55,6 +56,11 @@ class RunCache:
 
     def all_details(self, kind):
         return {row[0]:json.loads(row[1]) for row in self.db.execute('SELECT id,body FROM details WHERE kind=?',(kind,))}
+
+    def iter_details(self,kind):
+        """Read one potentially large recording at a time without retaining the catalog."""
+        for identity,body in self.db.execute('SELECT id,body FROM details WHERE kind=?',(kind,)):
+            yield identity,json.loads(body)
 
     def missing(self, start, end):
         cursor, last = date.fromisoformat(start), date.fromisoformat(end)
@@ -109,6 +115,8 @@ class RunCache:
                 else:merged.append((first,final))
             self.db.execute('DELETE FROM coverage')
             self.db.executemany('INSERT INTO coverage VALUES(?,?)',merged)
+        if self._terrain_states is not None:
+            for identity in changed:self._terrain_states.pop(identity,None)
         return changed
 
     def activities(self, start, end):
@@ -120,7 +128,11 @@ class RunCache:
 
     def save_detail(self, identity, kind, body):
         with self.db:self.db.execute('INSERT OR REPLACE INTO details VALUES(?,?,?)',(identity,kind,json.dumps(body)))
+        if kind=='terrain_v1' and self._terrain_states is not None:
+            from route_terrain import complete
+            self._terrain_states[str(identity)]=(body.get('status'),complete(body))
 
     def clear(self):
+        self._terrain_states=None
         with self.db:
             for table in ('runs','coverage','details','daily','sync_meta'):self.db.execute('DELETE FROM '+table)
