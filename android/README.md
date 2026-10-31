@@ -5,7 +5,7 @@ Chaquopy 17. Garmin sign-in and downloads run inside the APK on a background
 thread. Termux is used to build and install updates.
 
 The Android source originally developed in `run_dashboard` now lives here in the
-`running-dashboard` repository. Version **0.32.0** brings the web dashboard's
+`running-dashboard` repository. Version **0.32.1** brings the web dashboard's
 data sources, calibration history, and presentation into the native Targets, Trends, Sessions, and Profile screens, in that navigation order. Targets is the launch and Back destination.
 
 ## Local route review
@@ -437,10 +437,11 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   for uniform manual rates. The same selection supplies interval warm-up/cooldown
   pace in manual plans.
 - **Profile → Workouts** defines Easy (45 min) and Easy long (80 min), plus warm-up,
-  repetitions, work duration and cooldown for Short / Medium / Long. Initial interval
+  repetitions, work duration, recovery seconds and cooldown for Short / Medium / Long. Initial interval
   defaults are 10×3, 6×5, and 3×10 minutes, each with 10 min warm-up and cooldown.
-  Every repetition has exactly one minute of walking afterward, including the final
-  rep. Walking pace starts at 20:00/mi and is configurable in the selected distance
+  Each type has its own recovery duration (0–1800 seconds), initially 60 seconds
+  for existing and new profiles. Recovery follows every repetition, including the
+  final rep; zero skips walking. Walking pace starts at 20:00/mi and is configurable in the selected distance
   units. Warm-up and cooldown use the NSM easy pace with the estimated surface
   slowdown. Phases follow the route terrain (or uniform manual rates); only work phases
   determine interval pace and work elevation. Elevation effects and weather apply
@@ -449,8 +450,10 @@ overlay refreshes the compact readout while keeping the Profile scroll position.
   ascent/descent profile. Trail surface slowdown is a pooled historical estimate;
   day-specific footing and technical difficulty are not measured.
   **Use latest session** explicitly copies parameters from the latest matching run;
-  selected work laps determine reps and median work duration, and the final walking
-  minute is removed from the remaining cooldown duration. Moving recovery laps can
+  selected work laps determine reps and median work duration. Median gaps between
+  reps populate recovery seconds; a separate final recovery supplies the duration
+  when only one rep is available. Otherwise the saved duration is retained. The
+  final recovery is removed from the remaining cooldown duration. Moving recovery laps can
   populate walking pace; stationary/unusable recoveries leave its existing value.
   Sync never silently changes workout definitions. Inline valid edits save immediately.
   Easy durations accept 5–360 min; interval plans are bounded to six hours.

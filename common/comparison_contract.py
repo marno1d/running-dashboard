@@ -52,7 +52,7 @@ SETTINGS.update(fields('target_route_source'))
 SETTINGS.update(fields('target_surface'))
 SETTINGS.update(fields('prediction_fit_version'))
 SETTINGS.update(fields('include_gear'))
-SETTINGS['workout_definitions']={key:fields('warmup reps work cooldown') for key in ('short','medium','long')}
+SETTINGS['workout_definitions']={key:fields('warmup reps work cooldown recovery') for key in ('short','medium','long')}
 SETTINGS.update(categories={'*':SCALAR},laps={'*':[SCALAR]})
 ACTIVITY = fields('activityId activityName startTimeLocal startTimeGMT distance duration movingDuration elapsedDuration averageSpeed averageHR maxHR activityType activityTrainingLoad elevationGain elevationLoss averageTemperature fastestSplit_5000')
 ACTIVITY.update(_station_match=fields('station stationName stationRoute stationDistanceMiles'),

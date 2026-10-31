@@ -142,6 +142,28 @@ class WorkoutProjectionTest(unittest.TestCase):
         self.assertNotAlmostEqual(first['work_gain'],second['work_gain'])
         self.assertNotAlmostEqual(first['work_pace'],second['work_pace'])
         self.assertGreater(second['gain'],second['work_gain'])
+    def test_recovery_duration_is_independent_per_type_and_legacy_defaults_to_one_minute(self):
+        settings=dict(workout_definitions=dict(short=dict(recovery=30),medium=dict(recovery=90),long=dict(recovery=120)))
+        for kind,seconds,reps,work in [('short',30,10,3),('medium',90,6,5),('long',120,3,10)]:
+            with self.subTest(kind=kind):
+                phases=phases_for(settings,kind,400,300)
+                plan=project(self.flat,'one_way',10000,False,phases,settings)
+                self.assertEqual([p['duration'] for p in phases if p['kind']=='walk'],[seconds]*reps)
+                self.assertAlmostEqual(plan['duration'],1200+reps*(work*60+seconds))
+                self.assertAlmostEqual(plan['work_duration'],reps*work*60)
+                self.assertAlmostEqual(plan['work_pace'],300)
+        self.assertEqual(workout_definition(dict(workout_definitions=dict(short=dict(work=2))),'short')['recovery'],60)
+    def test_zero_recovery_omits_walk_and_longer_recovery_moves_next_rep_along_route(self):
+        settings=dict(workout_definitions=dict(short=dict(warmup=0,reps=2,work=1,cooldown=0,recovery=0)))
+        profile=[[0,0,0],[300,0,0],[450,60,0],[10000,60,0]]
+        first=project(profile,'one_way',10000,False,phases_for(settings,'short',400,300),settings)
+        self.assertEqual([p['kind'] for p in first['phases']],['work','work'])
+        self.assertAlmostEqual(first['duration'],120)
+        settings['workout_definitions']['short']['recovery']=120
+        second=project(profile,'one_way',10000,False,phases_for(settings,'short',400,300),settings)
+        self.assertAlmostEqual(second['duration'],360)
+        self.assertGreater(second['phases'][2]['start'],first['phases'][1]['start'])
+        self.assertNotAlmostEqual(second['work_gain'],first['work_gain'])
     def test_work_gain_excludes_walking_and_cooldown(self):
         profile=[[0,0,0],[10000,1000,0]]
         settings=dict(workout_definitions=dict(short=dict(warmup=1,reps=2,work=1,cooldown=1)))
@@ -170,7 +192,7 @@ class WorkoutProjectionTest(unittest.TestCase):
         phases=phases_for(dict(workout_definitions=dict(short=dict(warmup=0,reps=1,work=3,cooldown=0))),'short',None,300)
         self.assertEqual([p['kind'] for p in phases],['work','walk'])
     def test_invalid_definitions_and_excessive_durations_rejected(self):
-        for patch in ({'reps':0},{'reps':1.5},{'warmup':-1},{'work':0},{'reps':40,'work':60}):
+        for patch in ({'reps':0},{'reps':1.5},{'warmup':-1},{'work':0},{'recovery':-1},{'recovery':1801},{'recovery':float('nan')},{'reps':40,'work':60},{'warmup':120,'cooldown':120,'reps':4,'work':1,'recovery':1800}):
             with self.subTest(patch=patch),self.assertRaises(ValueError):workout_definition(dict(workout_definitions=dict(short=patch)),'short')
 
 
@@ -284,17 +306,23 @@ class RouteBackendV2Test(unittest.TestCase):
         self.assertFalse(rows['4']['needs_review']);self.assertFalse(rows['5']['needs_review'])
     def test_all_workouts_and_races_project_without_network_and_export_no_profiles(self):
         self.assign();self.session.client=None
+        config=self.config(workout_definitions=dict(short=dict(recovery=30),medium=dict(recovery=90),long=dict(recovery=120)))
         before=self.session.cache.db.total_changes
-        data=self.session.cached_dashboard('2026-10-21',30,self.config())
+        data=self.session.cached_dashboard('2026-10-21',30,config)
         target=data['targets'];self.assertEqual(target['route_engine'],4)
         self.assertTrue(all(not p.get('error') for p in target['route_plans']))
         self.assertEqual(len(target['route_plans']),5)
         self.assertTrue(all(p['pace'] for p in target['rows']))
         self.assertGreater(target['races'][-1]['gain'],target['races'][0]['gain'])
+        for plan in target['route_plans']:
+            if plan['kind'] in ('short','medium','long'):
+                expected=json.loads(config)['workout_definitions'][plan['kind']]['recovery']
+                self.assertTrue(all(abs(p['duration']-expected)<1e-6 for p in plan['phases'] if p['kind']=='walk'))
         self.assertEqual(self.session.cache.db.total_changes,before)
-        snapshot=self.session.comparison('2026-10-21',30,self.config())['comparison']
+        snapshot=self.session.comparison('2026-10-21',30,config)['comparison']
         from comparison_contract import validate_snapshot
         validate_snapshot(snapshot)
+        self.assertEqual(snapshot['selection']['settings']['workout_definitions'],json.loads(config)['workout_definitions'])
         encoded=json.dumps(snapshot)
         for banned in ('route_data_v1','route_book_v2','profile_version','"profile"','"cells"'):self.assertNotIn(banned,encoded)
         self.assertEqual(len(snapshot['android']['targets']['route_plans']),5)
@@ -335,7 +363,7 @@ class RouteBackendV2Test(unittest.TestCase):
         settings=json.loads(self.config());settings['categories']['1']='short';settings['categories']['2']='short'
         before=copy.deepcopy(settings)
         result=self.session.workout_latest('short','2026-10-21',json.dumps(settings))
-        self.assertEqual(result['source']['id'],'1');self.assertEqual(result['definition'],dict(warmup=10,cooldown=5,reps=2,work=3))
+        self.assertEqual(result['source']['id'],'1');self.assertEqual(result['definition'],dict(warmup=10,cooldown=5,reps=2,work=3,recovery=60))
         self.assertEqual(result['walking_pace'],800);self.assertEqual(before,settings)
         self.assertEqual(self.session.workout_latest('walking','2026-10-21',json.dumps(settings))['walking_pace'],800)
         self.session.client.download_activity.assert_not_called()
@@ -355,10 +383,25 @@ class RouteBackendV2Test(unittest.TestCase):
 
 
 class WorkoutInferenceTest(unittest.TestCase):
+    def test_infers_ninety_second_recoveries_and_deducts_them_from_merged_cooldown(self):
+        laps=[dict(duration=600,distance=1500,active=False,intensity='warmup'),
+              dict(duration=180,distance=600,active=True,intensity='active'),
+              dict(duration=90,distance=100,active=False,intensity='rest'),
+              dict(duration=180,distance=600,active=True,intensity='active'),
+              dict(duration=390,distance=850,active=False,intensity='cooldown')]
+        definition,walking=infer_workout(dict(laps=laps),'medium',{},'1')
+        self.assertEqual(definition,dict(warmup=10,cooldown=5,reps=2,work=3,recovery=90))
+        self.assertEqual(walking,900)
+    def test_single_rep_without_separate_recovery_keeps_that_types_saved_time(self):
+        laps=[dict(duration=180,distance=600,active=True,intensity='active'),
+              dict(duration=420,distance=900,active=False,intensity='cooldown')]
+        definition,_=infer_workout(dict(laps=laps),'long',dict(workout_definitions=dict(long=dict(recovery=120))),'1')
+        self.assertEqual(definition['recovery'],120)
+        self.assertEqual(definition['cooldown'],5)
     def test_uses_selected_work_and_deducts_final_minute_from_cooldown(self):
         laps=[dict(duration=600,distance=1500,active=False,intensity='warmup'),dict(duration=180,distance=600,active=True,intensity='active'),dict(duration=60,distance=75,active=False,intensity='rest'),dict(duration=180,distance=600,active=True,intensity='active'),dict(duration=60,distance=75,active=False,intensity='rest'),dict(duration=300,distance=750,active=False,intensity='cooldown')]
         definition,walking=infer_workout(dict(laps=laps),'short',{},'1')
-        self.assertEqual(definition,dict(warmup=10,cooldown=5,reps=2,work=3))
+        self.assertEqual(definition,dict(warmup=10,cooldown=5,reps=2,work=3,recovery=60))
         self.assertEqual(walking,800)
         changed,_=infer_workout(dict(laps=laps),'short',dict(laps={'1':[3]}),'1')
         self.assertEqual(changed['reps'],1);self.assertEqual(changed['warmup'],14)

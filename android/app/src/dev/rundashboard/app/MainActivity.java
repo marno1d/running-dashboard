@@ -1061,11 +1061,11 @@ public final class MainActivity extends Activity {
             JSONObject definition=definitions==null?null:definitions.optJSONObject(kind);if(definition==null)definition=new JSONObject();
             int reps=definition.optInt("reps",kind.equals("short")?10:kind.equals("medium")?6:3);
             double work=definition.optDouble("work",kind.equals("short")?3:kind.equals("medium")?5:10);
-            addText(summary,routeKindLabel(kind)+" · "+reps+" × "+workoutMinutes(work)+" min · "+workoutMinutes(definition.optDouble("warmup",10))+" / "+workoutMinutes(definition.optDouble("cooldown",10))+" min",14,ink,false,6);
+            addText(summary,routeKindLabel(kind)+" · "+reps+" × "+workoutMinutes(work)+" min · "+workoutMinutes(definition.optDouble("recovery",60))+" s recovery · "+workoutMinutes(definition.optDouble("warmup",10))+" / "+workoutMinutes(definition.optDouble("cooldown",10))+" min",14,ink,false,6);
         }
         addText(summary,"Intervals: reps × work · warm-up / cooldown",12,muted,false,4);
         double pace=state.optDouble("target_walking_pace",1200/1.609344);
-        addText(summary,"Recovery · 1 min walk after every rep · "+ScatterPlot.pace(pace,miles)+(miles?" /mi":" /km"),13,muted,false,8);
+        addText(summary,"Walking pace · "+ScatterPlot.pace(pace,miles)+(miles?" /mi":" /km"),13,muted,false,8);
     }
     private void showWorkoutEditor(Runnable changed){
         LinearLayout body=section();TextView status=addText(body,"Changes save automatically",12,muted,false,0);
@@ -1075,7 +1075,7 @@ public final class MainActivity extends Activity {
         sheet.setOnDismissListener(dialog->changed.run());redraw[0].run();
     }
     private void renderWorkoutEditor(LinearLayout panel,Dialog owner,TextView loadStatus,Runnable redraw){
-        addText(panel,"Warm-up and cooldown use the selected surface’s 128 bpm easy pace. Every repetition is followed by a one-minute walk, including the last.",13,muted,false,8);
+        addText(panel,"Warm-up and cooldown use the selected surface’s NSM easy pace. Set walking recovery separately for each interval type. Recovery follows every rep, including the last; use 0 to skip it.",13,muted,false,8);
         for(String kind:new String[]{"easy","easy_long"}){
             String key=kind.equals("easy")?"target_easy_minutes":"target_easy_long_minutes";
             EditText minutes=input(panel,routeKindLabel(kind)+" · minutes",InputType.TYPE_CLASS_NUMBER);minutes.setText(setting(key,kind.equals("easy")?"45":"80"));
@@ -1109,19 +1109,19 @@ public final class MainActivity extends Activity {
         LinearLayout panel=section();panel.setPadding(dp(12),dp(12),dp(12),dp(12));panel.setBackground(shape(palette.high,16));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(14);parent.addView(panel,lp);addText(panel,routeKindLabel(kind),16,ink,true,0);
         JSONObject definition=null;try{definition=settings().optJSONObject("workout_definitions");if(definition!=null)definition=definition.optJSONObject(kind);}catch(Exception ignored){}
-        String[] keys={"warmup","reps","work","cooldown"},labels={"Warm-up min","Repetitions","Work min","Cooldown min"};
-        double[] defaults={10,kind.equals("short")?10:kind.equals("medium")?6:3,kind.equals("short")?3:kind.equals("medium")?5:10,10};
-        EditText[] fields=new EditText[4];MaterialUi.MetricGroup grid=new MaterialUi.MetricGroup(this);
-        for(int i=0;i<4;i++){LinearLayout column=section();fields[i]=input(column,labels[i],InputType.TYPE_CLASS_NUMBER|(i==1?0:InputType.TYPE_NUMBER_FLAG_DECIMAL));fields[i].setMinWidth(dp(64));double value=definition==null?defaults[i]:definition.optDouble(keys[i],defaults[i]);fields[i].setText(i==1?Integer.toString((int)value):Double.toString(value));grid.addView(column);}
-        panel.addView(grid,new LinearLayout.LayoutParams(-1,-2));TextView status=addText(panel,preferences.getString("workout_source_"+kind,"Edits save automatically · 1 min walking after every rep"),11,muted,false,4);
+        String[] keys={"warmup","reps","work","cooldown","recovery"},labels={"Warm-up min","Repetitions","Work min","Cooldown min","Recovery sec"};
+        double[] defaults={10,kind.equals("short")?10:kind.equals("medium")?6:3,kind.equals("short")?3:kind.equals("medium")?5:10,10,60};
+        EditText[] fields=new EditText[keys.length];MaterialUi.MetricGroup grid=new MaterialUi.MetricGroup(this);
+        for(int i=0;i<keys.length;i++){LinearLayout column=section();fields[i]=input(column,labels[i],InputType.TYPE_CLASS_NUMBER|(i==1?0:InputType.TYPE_NUMBER_FLAG_DECIMAL));fields[i].setMinWidth(dp(64));double value=definition==null?defaults[i]:definition.optDouble(keys[i],defaults[i]);fields[i].setText(workoutMinutes(value));grid.addView(column);}
+        panel.addView(grid,new LinearLayout.LayoutParams(-1,-2));TextView status=addText(panel,preferences.getString("workout_source_"+kind,"Edits save automatically · recovery after every rep"),11,muted,false,4);
         for(EditText field:fields)field.addTextChangedListener(new TextWatcher(){
             public void beforeTextChanged(CharSequence text,int start,int count,int after){}
             public void onTextChanged(CharSequence text,int start,int before,int count){
-                try{double[] values=new double[4];for(int j=0;j<4;j++){values[j]=Double.parseDouble(fields[j].getText().toString());if(!Double.isFinite(values[j]))throw new NumberFormatException();}
-                    if(values[0]<0||values[0]>120||values[3]<0||values[3]>120||values[1]<1||values[1]>40||values[1]!=Math.rint(values[1])||values[2]<.5||values[2]>60||values[0]+values[3]+values[1]*(values[2]+1)>360)throw new NumberFormatException();
-                    JSONObject state=settings(),definitions=state.optJSONObject("workout_definitions");if(definitions==null)definitions=new JSONObject();JSONObject saved=new JSONObject();for(int j=0;j<4;j++)saved.put(keys[j],values[j]);definitions.put(kind,saved);state.put("workout_definitions",definitions);
-                    preferences.edit().putString("settings",state.toString()).remove("workout_source_"+kind).apply();profileDirty=true;status.setText("Saved · 1 min walking after every rep");
-                }catch(Exception error){status.setText("Use 0–120 min warm-up/cooldown, 1–40 reps, 0.5–60 min work; total at most 6 hours.");}
+                try{double[] values=new double[keys.length];for(int j=0;j<keys.length;j++){values[j]=Double.parseDouble(fields[j].getText().toString());if(!Double.isFinite(values[j]))throw new NumberFormatException();}
+                    if(values[0]<0||values[0]>120||values[3]<0||values[3]>120||values[1]<1||values[1]>40||values[1]!=Math.rint(values[1])||values[2]<.5||values[2]>60||values[4]<0||values[4]>1800||values[0]+values[3]+values[1]*(values[2]+values[4]/60)>360)throw new NumberFormatException();
+                    JSONObject state=settings(),definitions=state.optJSONObject("workout_definitions");if(definitions==null)definitions=new JSONObject();JSONObject saved=new JSONObject();for(int j=0;j<keys.length;j++)saved.put(keys[j],values[j]);definitions.put(kind,saved);state.put("workout_definitions",definitions);
+                    preferences.edit().putString("settings",state.toString()).remove("workout_source_"+kind).apply();profileDirty=true;status.setText(values[4]==0?"Saved · no walking recovery":"Saved · "+workoutMinutes(values[4])+" sec recovery after every rep");
+                }catch(Exception error){status.setText("Use 0–120 min warm-up/cooldown, 1–40 reps, 0.5–60 min work, 0–1800 sec recovery; total at most 6 hours.");}
             }
             public void afterTextChanged(Editable text){}
         });

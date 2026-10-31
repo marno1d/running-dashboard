@@ -4,9 +4,10 @@ import math
 from statistics import median
 
 SHAPES=('out_back','loop','one_way')
-DEFAULTS={'short':dict(warmup=10,reps=10,work=3,cooldown=10),
-          'medium':dict(warmup=10,reps=6,work=5,cooldown=10),
-          'long':dict(warmup=10,reps=3,work=10,cooldown=10)}
+# Warm-up, work and cooldown are minutes; recovery is seconds.
+DEFAULTS={'short':dict(warmup=10,reps=10,work=3,cooldown=10,recovery=60),
+          'medium':dict(warmup=10,reps=6,work=5,cooldown=10,recovery=60),
+          'long':dict(warmup=10,reps=3,work=10,cooldown=10,recovery=60)}
 WALKING_PACE=1200/1.609344  # Configurable initial 20:00/mi, stored as seconds/km.
 
 
@@ -57,10 +58,10 @@ def workout_definition(settings,kind):
     if kind not in DEFAULTS:raise ValueError('Unknown workout type.')
     values=dict(DEFAULTS[kind],**((settings.get('workout_definitions') or {}).get(kind) or {}))
     values={key:float(values[key]) for key in DEFAULTS[kind]}
-    if not all(math.isfinite(v) for v in values.values()) or not 0<=values['warmup']<=120 or not 0<=values['cooldown']<=120 or not 1<=values['reps']<=40 or values['reps']!=int(values['reps']) or not .5<=values['work']<=60:
-        raise ValueError('Use 0–120 min warm-up/cooldown, 1–40 reps, and 0.5–60 min work.')
+    if not all(math.isfinite(v) for v in values.values()) or not 0<=values['warmup']<=120 or not 0<=values['cooldown']<=120 or not 1<=values['reps']<=40 or values['reps']!=int(values['reps']) or not .5<=values['work']<=60 or not 0<=values['recovery']<=1800:
+        raise ValueError('Use 0–120 min warm-up/cooldown, 1–40 reps, 0.5–60 min work, and 0–1800 sec recovery.')
     values['reps']=int(values['reps'])
-    if values['warmup']+values['cooldown']+values['reps']*(values['work']+1)>360:raise ValueError('Keep the planned workout within six hours.')
+    if values['warmup']+values['cooldown']+values['reps']*(values['work']+values['recovery']/60)>360:raise ValueError('Keep the planned workout within six hours.')
     return values
 
 
@@ -76,7 +77,7 @@ def phases_for(settings,kind,easy_pace,work_pace=None):
     if definition['warmup']:phases.append(dict(kind='warmup',duration=definition['warmup']*60,base_pace=easy_pace))
     for rep in range(definition['reps']):
         phases.append(dict(kind='work',rep=rep+1,duration=definition['work']*60,base_pace=work_pace))
-        phases.append(dict(kind='walk',rep=rep+1,duration=60,base_pace=walking))
+        if definition['recovery']:phases.append(dict(kind='walk',rep=rep+1,duration=definition['recovery'],base_pace=walking))
     if definition['cooldown']:phases.append(dict(kind='cooldown',duration=definition['cooldown']*60,base_pace=easy_pace))
     return phases
 
@@ -179,12 +180,19 @@ def infer_workout(data,kind,settings,identity):
     if any(not lap.get('duration') for lap in laps):raise ValueError('The recording needs lap timer durations.')
     warmup=sum(lap['duration'] for lap in laps[:indices[0]])/60
     tail=laps[indices[-1]+1:]
-    # One minute of walking is modeled after the last rep too, even when Garmin
-    # folds that minute into a longer cooldown lap.
-    cooldown=max(0,sum(lap['duration'] for lap in tail)-60)/60
+    gaps=[sum(lap['duration'] for lap in laps[a[-1]+1:b[0]]) for a,b in zip(groups,groups[1:])]
+    final_recovery=[]
+    for lap in tail:
+        if lap.get('intensity') not in ('rest','recovery'):break
+        final_recovery.append(lap)
+    recovery=median(gaps) if gaps else (sum(lap['duration'] for lap in final_recovery) if final_recovery else workout_definition(settings,kind)['recovery'])
+    # Garmin may fold the final recovery into its cooldown lap. Deduct the
+    # observed final recovery when separate, otherwise the inferred duration.
+    final_seconds=sum(lap['duration'] for lap in final_recovery) if final_recovery else recovery
+    cooldown=max(0,sum(lap['duration'] for lap in tail)-final_seconds)/60
     walking=[laps[i+1] for i in indices if i+1<len(laps) and i+1 not in indices and laps[i+1].get('distance') and laps[i+1].get('intensity') in ('rest','recovery')]
     walk_pace=sum(lap['duration'] for lap in walking)/sum(lap['distance'] for lap in walking)*1000 if walking else None
-    values=dict(warmup=round(warmup,1),cooldown=round(cooldown,1),reps=len(groups),work=round(median(sum(laps[i]['duration'] for i in group) for group in groups)/60,2))
+    values=dict(warmup=round(warmup,1),cooldown=round(cooldown,1),reps=len(groups),work=round(median(sum(laps[i]['duration'] for i in group) for group in groups)/60,2),recovery=round(recovery,2))
     workout_definition(dict(workout_definitions={kind:values}),kind)
     if walk_pace is not None and not 240<=walk_pace<=2400:walk_pace=None
     return values,walk_pace
